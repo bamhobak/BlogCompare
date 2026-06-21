@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.68'
+VERSION = 'v1.0.69'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -114,7 +114,7 @@ class App:
         self._load_settings()
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
         self.root.after(100, self._load_ids_from_gist)
-        self.root.after(3000, lambda: threading.Thread(
+        self.root.after(500, lambda: threading.Thread(
             target=self._check_for_update, daemon=True).start())
 
     # ── Style ─────────────────────────────────────────────────────────────
