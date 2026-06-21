@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.67'
+VERSION = 'v1.0.68'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -108,7 +108,6 @@ class App:
         self._post_links: dict = {}
         self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
         self._update_info: dict = {}
-        self._update_btn: tk.Button = None
 
         self._setup_style()
         self._build_ui()
@@ -167,18 +166,8 @@ class App:
         self._build_right(right)
 
     def _build_left(self, parent):
-        self._update_btn = tk.Button(
-            parent, text='', command=self._show_update_dialog,
-            bg='#1E8259', fg='white', font=FONT_B,
-            relief='raised', bd=2, cursor='hand2',
-            activebackground='#5CCC8A', activeforeground='white',
-            pady=4,
-        )
-        # 업데이트 있을 때만 pack()으로 표시
-
         # 비교대상 아이디 입력
         lf_id = ttk.LabelFrame(parent, text='★ 비교대상 아이디 입력')
-        self._left_first = lf_id
         lf_id.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
 
         ys = ttk.Scrollbar(lf_id)
@@ -683,63 +672,36 @@ class App:
                     'url': url,
                     'notes': data.get('body', '').strip(),
                 }
-                self.root.after(0, self._show_update_btn)
-        except Exception:
-            pass
-
-    def _show_update_btn(self):
-        try:
-            ver = self._update_info.get('version', '')
-            self._update_btn.config(text=f'★ {ver} 업데이트 있음 — 클릭하여 설치')
-            self._update_btn.pack(fill=tk.X, padx=4, pady=(4, 2), before=self._left_first)
-            self._blink_update_btn()
-        except Exception:
-            pass
-
-    def _blink_update_btn(self):
-        try:
-            if not self._update_btn.winfo_ismapped():
-                return
-            cur = self._update_btn.cget('bg')
-            next_color = '#5CCC8A' if cur == '#1E8259' else '#1E8259'
-            self._update_btn.config(bg=next_color)
-            self.root.after(600, self._blink_update_btn)
+                self.root.after(0, self._show_update_dialog)
         except Exception:
             pass
 
     def _show_update_dialog(self):
         info = self._update_info
+        ver = info.get('version', '')
+
         dlg = tk.Toplevel(self.root)
-        dlg.title('업데이트')
+        dlg.title('업데이트 알림')
         dlg.resizable(False, False)
         dlg.configure(bg=BG)
         dlg.grab_set()
-
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        dlg.geometry(f'380x200+{(sw - 380) // 2}+{(sh - 200) // 2}')
+        dlg.geometry(f'360x190+{(sw - 360) // 2}+{(sh - 190) // 2}')
 
-        tk.Label(
-            dlg, text=f'새 버전 {info.get("version", "")} 업데이트 가능',
-            font=FONT_B, bg=BG, fg=FG,
-        ).pack(pady=(22, 6))
-
-        notes = info.get('notes', '')
-        if notes:
-            tk.Label(dlg, text=notes, font=FONT, bg=BG, fg=FG_DIM).pack(pady=(0, 10))
-        else:
-            tk.Frame(dlg, bg=BG, height=10).pack()
+        tk.Label(dlg, text='업데이트가 있습니다.',
+                 font=FONT_B, bg=BG, fg=FG).pack(pady=(30, 4))
+        tk.Label(dlg, text='업데이트를 진행해주세요.',
+                 font=FONT, bg=BG, fg=FG_DIM).pack()
+        tk.Label(dlg, text=f'{VERSION}  →  {ver}',
+                 font=FONT, bg=BG, fg='#6B7280').pack(pady=(4, 18))
 
         if not getattr(sys, 'frozen', False):
-            tk.Label(
-                dlg, text='개발 환경에서는 자동 업데이트를 지원하지 않습니다.',
-                font=FONT, bg=BG, fg='#DC2626',
-            ).pack(pady=8)
-            tk.Button(
-                dlg, text='확인', command=dlg.destroy,
-                bg=ACCENT, fg='white', font=FONT_B,
-                relief='raised', bd=2, padx=20, pady=4,
-            ).pack()
+            tk.Label(dlg, text='개발 환경에서는 자동 업데이트를 지원하지 않습니다.',
+                     font=FONT, bg=BG, fg='#DC2626').pack()
+            tk.Button(dlg, text='확인', command=dlg.destroy,
+                      bg=ACCENT, fg='white', font=FONT_B,
+                      relief='raised', bd=2, padx=20, pady=4).pack(pady=8)
             return
 
         row = tk.Frame(dlg, bg=BG)
@@ -747,18 +709,16 @@ class App:
 
         def _start():
             dlg.destroy()
-            self._do_update(info.get('url', ''), info.get('version', ''))
+            self._do_update(info.get('url', ''), ver)
 
-        tk.Button(
-            row, text='지금 업데이트', command=_start,
-            bg='#1E8259', fg='white', font=FONT_B,
-            relief='raised', bd=2, padx=14, pady=4, cursor='hand2',
-        ).pack(side=tk.LEFT, padx=(0, 10))
-        tk.Button(
-            row, text='나중에', command=dlg.destroy,
-            bg='#9CA3AF', fg='white', font=FONT_B,
-            relief='raised', bd=2, padx=14, pady=4, cursor='hand2',
-        ).pack(side=tk.LEFT)
+        tk.Button(row, text='업데이트', command=_start,
+                  bg='#1E8259', fg='white', font=FONT_B,
+                  relief='raised', bd=2, padx=18, pady=5, cursor='hand2',
+                  ).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Button(row, text='나중에', command=dlg.destroy,
+                  bg='#9CA3AF', fg='white', font=FONT_B,
+                  relief='raised', bd=2, padx=18, pady=5, cursor='hand2',
+                  ).pack(side=tk.LEFT)
 
     def _do_update(self, url: str, new_version: str):
         import tempfile, zipfile, urllib.request
