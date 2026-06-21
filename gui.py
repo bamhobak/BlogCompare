@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.63'
+VERSION = 'v1.0.64'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -167,8 +167,18 @@ class App:
         self._build_right(right)
 
     def _build_left(self, parent):
+        self._update_btn = tk.Button(
+            parent, text='', command=self._show_update_dialog,
+            bg='#1E8259', fg='white', font=FONT_B,
+            relief='raised', bd=2, cursor='hand2',
+            activebackground='#5CCC8A', activeforeground='white',
+            pady=4,
+        )
+        # 업데이트 있을 때만 pack()으로 표시
+
         # 비교대상 아이디 입력
         lf_id = ttk.LabelFrame(parent, text='★ 비교대상 아이디 입력')
+        self._left_first = lf_id
         lf_id.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
 
         ys = ttk.Scrollbar(lf_id)
@@ -243,14 +253,6 @@ class App:
 
         self.progress = ttk.Progressbar(lf_search, mode='determinate', maximum=100)
         self.progress.pack(fill=tk.X, padx=6, pady=(0, 6))
-
-        self._update_btn = tk.Button(
-            parent, text='업데이트', command=self._show_update_dialog,
-            bg='#1E8259', fg='white', font=FONT_B,
-            relief='raised', bd=2, cursor='hand2',
-            activebackground='#5CCC8A', activeforeground='white',
-            pady=4,
-        )
 
     def _build_right(self, parent):
         COLS = ('키워드', '순위', '제목', '블로그명', '아이디', '작성일', '링크')
@@ -688,8 +690,8 @@ class App:
     def _show_update_btn(self):
         try:
             ver = self._update_info.get('version', '')
-            self._update_btn.config(text=f'{ver} 업데이트 있음')
-            self._update_btn.pack(fill=tk.X, padx=4, pady=(0, 4))
+            self._update_btn.config(text=f'★ {ver} 업데이트 있음 — 클릭하여 설치')
+            self._update_btn.pack(fill=tk.X, padx=4, pady=(4, 2), before=self._left_first)
             self._blink_update_btn()
         except Exception:
             pass
