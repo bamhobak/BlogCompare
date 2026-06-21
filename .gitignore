@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.spec
+settings.json
+config.json
+debug_*.py
+debug_*.html
+*.log
+icon_preview*.png
+make_icon.py
+test_crawler.py
