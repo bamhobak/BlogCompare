@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.61'
+VERSION = 'v1.0.62'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -662,27 +662,24 @@ class App:
 
     def _check_for_update(self):
         try:
-            cfg = _load_config()
-            token = cfg.get('github_token', '')
-            gist_id = cfg.get('gist_id', _GIST_ID)
-            hdrs = {**_GIST_HEADERS}
-            if token:
-                hdrs['Authorization'] = f'token {token}'
             r = requests.get(
-                f'https://api.github.com/gists/{gist_id}',
-                headers=hdrs,
+                f'https://api.github.com/repos/{_GITHUB_REPO}/releases/latest',
+                headers={'User-Agent': 'BlogCompare', 'Accept': 'application/vnd.github+json'},
                 timeout=15,
             )
             r.raise_for_status()
-            files = r.json().get('files', {})
-            raw = files.get(_UPDATE_VERSION_FILE, {}).get('content', '{}')
-            data = json.loads(raw)
-            latest = data.get('version', '')
+            data = r.json()
+            latest = data.get('tag_name', '')
             if latest and self._parse_ver(latest) > self._parse_ver(VERSION):
+                url = next(
+                    (a['browser_download_url'] for a in data.get('assets', [])
+                     if a['name'] == 'BlogCompare.zip'),
+                    '',
+                )
                 self._update_info = {
                     'version': latest,
-                    'url': data.get('url', ''),
-                    'notes': data.get('notes', ''),
+                    'url': url,
+                    'notes': data.get('body', '').strip(),
                 }
                 self.root.after(0, self._show_update_btn)
         except Exception:
