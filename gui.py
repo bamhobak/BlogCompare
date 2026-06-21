@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.72'
+VERSION = 'v1.0.73'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -661,7 +661,10 @@ class App:
             r.raise_for_status()
             data = r.json()
             latest = data.get('tag_name', '')
-            if latest and self._parse_ver(latest) > self._parse_ver(VERSION):
+            if not latest:
+                self._log(f'업데이트 체크: 버전 정보 없음')
+                return
+            if self._parse_ver(latest) > self._parse_ver(VERSION):
                 url = next(
                     (a['browser_download_url'] for a in data.get('assets', [])
                      if a['name'] == 'BlogCompare.zip'),
@@ -673,8 +676,10 @@ class App:
                     'notes': data.get('body', '').strip(),
                 }
                 self.root.after(0, self._show_update_dialog)
-        except Exception:
-            pass
+            else:
+                self._log(f'업데이트 체크: 최신 버전입니다 ({VERSION})')
+        except Exception as e:
+            self._log(f'업데이트 체크 실패: {e}')
 
     def _show_update_dialog(self):
         info = self._update_info
