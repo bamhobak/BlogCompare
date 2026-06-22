@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.75'
+VERSION = 'v1.0.76'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -800,7 +800,7 @@ $log = '{log}'
 try {{
     $srcLen = $src.TrimEnd('\\\\').Length + 1
     Get-ChildItem -LiteralPath $src -Recurse -File |
-        Where-Object {{ $_.Name -notin @('settings.json') }} |
+        Where-Object {{ $_.Name -notin @('settings.json', 'config.json') }} |
         ForEach-Object {{
             $rel    = $_.FullName.Substring($srcLen)
             $target = Join-Path $dst $rel
