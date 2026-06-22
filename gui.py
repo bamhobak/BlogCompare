@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.74'
+VERSION = 'v1.0.75'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -29,15 +29,20 @@ _GIST_ID            = '67bd8f83aab3404b487a31e86414fd72'
 _UPDATE_VERSION_FILE = 'blog_compare_version.json'
 _GITHUB_REPO        = 'bamhobak/BlogCompare'
 
-_CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+_CONFIG_PATH  = os.path.join(BASE_DIR, 'config.json')
+# 빌드 시 번들되는 기본 설정(_MEIPASS) — Gist 토큰 포함
+_BUNDLED_DIR  = getattr(sys, '_MEIPASS', BASE_DIR)
 
 
 def _load_config() -> dict:
-    try:
-        with open(_CONFIG_PATH, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {'github_token': '', 'gist_id': _GIST_ID}
+    # 사용자 폴더의 config.json 우선, 없으면 빌드에 포함된 app_config.json
+    for path in (_CONFIG_PATH, os.path.join(_BUNDLED_DIR, 'app_config.json')):
+        try:
+            with open(path, encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            continue
+    return {'github_token': '', 'gist_id': _GIST_ID}
 
 
 def _save_config(cfg: dict):

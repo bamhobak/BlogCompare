@@ -5,6 +5,7 @@ build/
 dist/
 settings.json
 config.json
+app_config.json
 debug_*.py
 debug_*.html
 *.log
