@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.78'
+VERSION = 'v1.0.79'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -114,6 +114,7 @@ class App:
         self._post_links: dict = {}
         self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
         self._update_info: dict = {}
+        self._saved_at: str = ''
 
         self._setup_style()
         self._build_ui()
@@ -173,8 +174,10 @@ class App:
 
     def _build_left(self, parent):
         # 비교대상 아이디 입력
-        lf_id = ttk.LabelFrame(parent, text='★ 비교대상 아이디 입력')
+        self.lf_id = ttk.LabelFrame(parent, text='★ 비교대상 아이디 입력')
+        lf_id = self.lf_id
         lf_id.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
+        self._update_saved_label()
 
         ys = ttk.Scrollbar(lf_id)
         ys.pack(side=tk.RIGHT, fill=tk.Y)
@@ -391,6 +394,10 @@ class App:
                         if k in counts:
                             self._counts[k] = counts[k]
                     self.count_var.set(self._counts[self.type_var.get()])
+                    saved_at = counts.get('_saved_at', '')
+                    if saved_at:
+                        self._saved_at = saved_at
+                        self._update_saved_label()
                     self._log('아이디&설정 로드 완료')
                 self.root.after(0, _apply)
             except Exception:
@@ -402,7 +409,18 @@ class App:
         self._save_settings()
         self.root.destroy()
 
+    def _update_saved_label(self):
+        # 아이디 입력 라벨프레임 제목 옆에 마지막 Gist 저장 날짜 표기
+        try:
+            if self._saved_at:
+                self.lf_id.config(text=f'★ 비교대상 아이디 입력  (최종 저장: {self._saved_at})')
+            else:
+                self.lf_id.config(text='★ 비교대상 아이디 입력')
+        except Exception:
+            pass
+
     def _save_to_gist(self):
+        import datetime
         cfg = _load_config()
         token, gist_id = cfg.get('github_token', ''), cfg.get('gist_id', '')
         if not token:
@@ -411,6 +429,8 @@ class App:
 
         ids = [ln.strip() for ln in self.id_text.get('1.0', tk.END).splitlines() if ln.strip()]
         counts = dict(self._counts)
+        saved_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        counts['_saved_at'] = saved_at
 
         self.btn_save_gist.config(text='저장 중...', state=tk.DISABLED)
         self._log('아이디&설정 저장 중...')
@@ -420,7 +440,11 @@ class App:
                 new_gist_id = _gist_push(token, gist_id, ids, counts)
                 cfg['gist_id'] = new_gist_id
                 _save_config(cfg)
-                self.root.after(0, lambda: self._log('아이디&설정 저장 완료'))
+                def _ok():
+                    self._saved_at = saved_at
+                    self._update_saved_label()
+                    self._log('아이디&설정 저장 완료')
+                self.root.after(0, _ok)
             except Exception as e:
                 self.root.after(0, lambda: self._log(f'Gist 저장 실패: {e}'))
             finally:
