@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.76'
+VERSION = 'v1.0.77'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -38,7 +38,8 @@ def _load_config() -> dict:
     # 사용자 폴더의 config.json 우선, 없으면 빌드에 포함된 app_config.json
     for path in (_CONFIG_PATH, os.path.join(_BUNDLED_DIR, 'app_config.json')):
         try:
-            with open(path, encoding='utf-8') as f:
+            # utf-8-sig: BOM이 있어도(메모장/PowerShell 저장 등) 정상 파싱
+            with open(path, encoding='utf-8-sig') as f:
                 return json.load(f)
         except Exception:
             continue
