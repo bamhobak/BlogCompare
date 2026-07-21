@@ -418,6 +418,6 @@ def search_naver(
             start = max(p['rank'] for p in page_posts) + 1
         else:
             start += per_page
-        time.sleep(random.uniform(0.3, 0.7))
+        time.sleep(random.uniform(0.6, 1.4))
 
     return all_posts
