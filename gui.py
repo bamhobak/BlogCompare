@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.80'
+VERSION = 'v1.0.81'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -756,7 +756,7 @@ class App:
                   ).pack(side=tk.LEFT)
 
     def _do_update(self, url: str, new_version: str):
-        import tempfile, zipfile, urllib.request
+        import tempfile, zipfile
 
         dlg = tk.Toplevel(self.root)
         dlg.title('업데이트 중...')
@@ -780,20 +780,23 @@ class App:
                 extract_dir.mkdir()
 
                 self.root.after(0, lambda: status_lbl.config(text='다운로드 중...'))
-                req = urllib.request.Request(url, headers={'User-Agent': 'BlogCompare'})
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    total = int(resp.headers.get('Content-Length', 0))
-                    downloaded = 0
-                    with open(zip_path, 'wb') as f:
-                        while True:
-                            chunk = resp.read(65536)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total > 0:
-                                pct = min(80, downloaded * 80 // total)
-                                self.root.after(0, lambda p=pct: prog.config(value=p))
+                headers = {'User-Agent': 'BlogCompare'}
+                try:
+                    resp = requests.get(url, headers=headers, stream=True, timeout=120)
+                except requests.exceptions.SSLError:
+                    # 일부 PC에서 인증서 체인 검증 실패 → 검증 생략하고 재시도
+                    resp = requests.get(url, headers=headers, stream=True,
+                                        timeout=120, verify=False)
+                resp.raise_for_status()
+                total = int(resp.headers.get('Content-Length', 0))
+                downloaded = 0
+                with open(zip_path, 'wb') as f:
+                    for chunk in resp.iter_content(65536):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            pct = min(80, downloaded * 80 // total)
+                            self.root.after(0, lambda p=pct: prog.config(value=p))
 
                 self.root.after(0, lambda: (
                     status_lbl.config(text='압축 해제 중...'),
