@@ -13,7 +13,7 @@ import requests
 
 from crawler import search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date
 
-VERSION = 'v1.0.82'
+VERSION = 'v1.0.83'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -774,7 +774,8 @@ class App:
 
         def _worker():
             try:
-                tmp_dir = Path(tempfile.mkdtemp(prefix='bc_upd_'))
+                # resolve(): 8.3 축약 경로(BAMHOB~1 등)를 긴 경로로 정규화
+                tmp_dir = Path(tempfile.mkdtemp(prefix='bc_upd_')).resolve()
                 zip_path = tmp_dir / f'update_{new_version}.zip'
                 extract_dir = tmp_dir / 'new'
                 extract_dir.mkdir()
@@ -826,18 +827,11 @@ $dst = '{dst}'
 $log = '{log}'
 'START' | Out-File $log -Encoding UTF8
 try {{
-    $srcLen = $src.TrimEnd('\\\\').Length + 1
-    Get-ChildItem -LiteralPath $src -Recurse -File |
-        Where-Object {{ $_.Name -notin @('settings.json', 'config.json') }} |
-        ForEach-Object {{
-            $rel    = $_.FullName.Substring($srcLen)
-            $target = Join-Path $dst $rel
-            $dir    = Split-Path $target -Parent
-            if (-not (Test-Path -LiteralPath $dir)) {{
-                New-Item -ItemType Directory -Path $dir -Force | Out-Null
-            }}
-            Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-        }}
+    # robocopy: 경로 문자열 계산 없이 트리 복사 (설정 파일은 덮어쓰지 않음)
+    robocopy $src $dst /E /R:3 /W:2 /XF settings.json config.json | Out-Null
+    if ($LASTEXITCODE -ge 8) {{
+        throw "robocopy failed: $LASTEXITCODE"
+    }}
     'COPY_DONE' | Out-File $log -Append -Encoding UTF8
     if (Test-Path -LiteralPath '{exe}') {{
         'LAUNCH' | Out-File $log -Append -Encoding UTF8
