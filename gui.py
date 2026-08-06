@@ -19,7 +19,7 @@ from crawler import (
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
 )
 
-VERSION = 'v1.0.97'
+VERSION = 'v1.1.01'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -385,7 +385,7 @@ class App:
         self.tree.bind('<Button-3>', lambda e: self._show_ctx(e, ctx))
 
     # 결과 요약 컬럼 폭 (Label width, 문자 단위)
-    SUM_COL_KW  = 24
+    SUM_COL_KW  = 19
     SUM_COL_VOL = 12
     SUM_COL_CNT = 12
     SUM_COL_POP = 18
@@ -399,10 +399,10 @@ class App:
         hdr.pack(fill=tk.X)
         for text, w in (
             ('키워드',     self.SUM_COL_KW),
-            ('월간 조회수', self.SUM_COL_VOL),
             ('블로그탭',   self.SUM_COL_CNT),
             ('카페탭',     self.SUM_COL_CNT),
             ('인기글',     self.SUM_COL_POP),
+            ('조회수',     self.SUM_COL_VOL),
             ('블 링크',    self.SUM_COL_LNK),
             ('카 링크',    self.SUM_COL_LNK),
         ):
@@ -936,9 +936,6 @@ class App:
         row.pack(fill=tk.X)
         tk.Label(row, text=kw, width=self.SUM_COL_KW,
                  font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
-        vol_txt = f'{volume:,}' if isinstance(volume, int) else '-'
-        tk.Label(row, text=vol_txt, width=self.SUM_COL_VOL,
-                 font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
         for tab in ('블로그', '카페'):
             tk.Label(row, text=fmt(counts.get(tab)), width=self.SUM_COL_CNT,
                      font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
@@ -954,6 +951,9 @@ class App:
         pop_lbl.bind('<Button-1>',
                      lambda _e, u=main_search_url(kw): webbrowser.open(u))
         pop_lbl.pack(side=tk.LEFT)
+        vol_txt = f'{volume:,}' if isinstance(volume, int) else '-'
+        tk.Label(row, text=vol_txt, width=self.SUM_COL_VOL,
+                 font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
         for tab in ('블로그', '카페'):
             url = first_page_search_url(kw, tab)
             lnk = tk.Label(row, text='열기', width=self.SUM_COL_LNK,
