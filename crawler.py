@@ -421,3 +421,173 @@ def search_naver(
         time.sleep(random.uniform(0.6, 1.4))
 
     return all_posts
+
+
+# ── 키워드 체크 (블로그탭/카페탭 최근 1주일 첫 페이지) ─────────────────────
+
+def _norm_match_text(s: str) -> str:
+    """매칭용 정규화: 소문자화 후 한글/영문/숫자만 남김."""
+    return re.sub(r'[^0-9a-z가-힣]', '', s.lower())
+
+
+def _covers(token: str, text: str) -> bool:
+    """token을 2글자 이상 조각들로 나눠 모든 조각이 text에 있으면 True."""
+    if token in text:
+        return True
+    n = len(token)
+    if n < 2:
+        return False
+    ok = [False] * (n + 1)
+    ok[0] = True
+    for i in range(2, n + 1):
+        for j in range(i - 1):
+            if ok[j] and i - j >= 2 and token[j:i] in text:
+                ok[i] = True
+                break
+    return ok[n]
+
+
+def title_matches_keyword(keyword: str, title: str) -> bool:
+    """
+    키워드의 단어가 모두 제목에 들어 있으면 유효.
+    붙여쓴 키워드(초등학교운동회업체)도 제목에 실제 존재하는
+    조각(초등학교/운동회/업체)으로 나눠지면 유효로 판정한다.
+    """
+    text = _norm_match_text(title)
+    for token in keyword.split():
+        t = _norm_match_text(token)
+        if t and not _covers(t, text):
+            return False
+    return True
+
+
+def _first_page_params(keyword: str, tab: str) -> dict:
+    if tab == '블로그':
+        return {'ssc': 'tab.blog.all', 'sm': 'tab_opt',
+                'query': keyword, 'nso': 'so:r,p:1w', 'qdt': '0'}
+    return {'ssc': 'tab.cafe.all', 'sm': 'tab_jum',
+            'query': keyword, 'nso': 'so:r,p:1w'}
+
+
+def first_page_search_url(keyword: str, tab: str) -> str:
+    """키워드 체크가 조회하는 것과 동일한 네이버 검색 페이지 URL."""
+    return ('https://search.naver.com/search.naver?'
+            + urllib.parse.urlencode(_first_page_params(keyword, tab)))
+
+
+def fetch_monthly_volumes(keywords: list, api_key: str, secret_key: str,
+                          customer_id: str) -> dict:
+    """
+    네이버 검색광고 keywordstool API로 월간 검색수(PC+모바일 합계) 조회.
+    반환: {키워드: int} — 조회 실패/미검출 키워드는 키 없음.
+    '< 10' 응답은 5로 근사한다.
+    """
+    import hmac
+    import hashlib
+    import base64
+
+    def _num(v):
+        if isinstance(v, str) and '<' in v:
+            return 5
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    out: dict = {}
+    # API는 공백 포함 키워드를 거부 → 공백 제거형을 힌트로 사용
+    norm = {re.sub(r'\s+', '', kw).upper(): kw for kw in keywords if kw.strip()}
+    hints = list(norm.keys())
+    for i in range(0, len(hints), 5):  # 호출당 힌트 최대 5개
+        chunk = hints[i:i + 5]
+        ts = str(int(time.time() * 1000))
+        msg = f'{ts}.GET./keywordstool'
+        sig = base64.b64encode(
+            hmac.new(secret_key.encode(), msg.encode(), hashlib.sha256).digest()
+        ).decode()
+        r = requests.get(
+            'https://api.searchad.naver.com/keywordstool',
+            params={'hintKeywords': ','.join(chunk), 'showDetail': '1'},
+            headers={
+                'X-Timestamp': ts,
+                'X-API-KEY':   api_key,
+                'X-Customer':  str(customer_id),
+                'X-Signature': sig,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        for item in r.json().get('keywordList', []):
+            rel = item.get('relKeyword', '').upper()
+            if rel in norm and norm[rel] not in out:
+                out[norm[rel]] = (_num(item.get('monthlyPcQcCnt', 0))
+                                  + _num(item.get('monthlyMobileQcCnt', 0)))
+    return out
+
+
+def main_search_url(keyword: str) -> str:
+    """네이버 메인 통합검색 페이지 URL."""
+    return ('https://search.naver.com/search.naver?'
+            + urllib.parse.urlencode({
+                'where': 'nexearch', 'sm': 'top_hty',
+                'fbm': '0', 'ie': 'utf8', 'query': keyword,
+            }))
+
+
+def fetch_popular_section(keyword: str) -> str:
+    """
+    메인 통합검색 페이지에 '~ 인기글' 섹션이 있으면 섹션 제목 반환, 없으면 ''.
+    제목은 키워드 주제에 따라 다름: 'IT·컴퓨터 인기글', '맛집 인기글', '인기글' 등.
+    """
+    _init_session()
+    resp = _SESSION.get('https://search.naver.com/search.naver',
+                        params={'where': 'nexearch', 'sm': 'top_hty',
+                                'fbm': '0', 'ie': 'utf8', 'query': keyword},
+                        timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, 'lxml')
+    for h2 in soup.find_all('h2'):
+        txt = re.sub(r'\s+', ' ', h2.get_text(' ')).strip()
+        if txt.endswith('인기글'):
+            return txt
+    return ''
+
+
+def fetch_first_page_titles(keyword: str, tab: str) -> list:
+    """
+    tab: '블로그' | '카페' — 최근 1주일 검색 첫 페이지 글 목록.
+    추가 로드(스크롤) 없이 첫 응답에 실린 글만 반환: [{'title', 'link'}]
+    """
+    _init_session()
+    resp = _SESSION.get('https://search.naver.com/search.naver',
+                        params=_first_page_params(keyword, tab), timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, 'lxml')
+
+    results, seen = [], set()
+    if tab == '블로그':
+        # 블로그탭: headline1 span 기반 (순위 체크와 동일 마크업)
+        for span in soup.find_all(
+            'span', class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
+        ):
+            a = span.find_parent('a')
+            href = a.get('href', '') if a else ''
+            key = href.split('?')[0]
+            if not href or key in seen:
+                continue
+            seen.add(key)
+            title = re.sub(r'\s+', ' ', span.get_text(' ')).strip()
+            if title:
+                results.append({'title': title, 'link': href})
+    else:
+        # 카페탭: 구형 마크업 — title_link 앵커가 글 제목
+        for a in soup.find_all('a', class_='title_link'):
+            href = a.get('href', '')
+            key = href.split('?')[0]
+            if not href or key in seen:
+                continue
+            seen.add(key)
+            title = re.sub(r'\s+', ' ', a.get_text(' ')).strip()
+            if title:
+                results.append({'title': title, 'link': href})
+    return results
