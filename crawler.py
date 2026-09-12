@@ -8,15 +8,46 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
-_SESSION = requests.Session()
-_SESSION.headers.update({
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    ),
-    'Accept-Language': 'ko-KR,ko;q=0.9',
-    'Referer': 'https://search.naver.com/',
-})
+# 네이버 검색은 TLS 지문(JA3)으로 봇을 거른다.
+# 일반 requests(OpenSSL) 핸드셰이크는 403 '검색 서비스 이용이 제한되었습니다' 페이지를 받는다.
+# curl_cffi 로 크롬 TLS 지문을 흉내내야 정상 응답을 받는다.
+try:
+    from curl_cffi import requests as _creq
+    _IMPERSONATE = 'chrome'
+except Exception:      # curl_cffi 없으면 기존 requests 로 폴백 (차단될 수 있음)
+    _creq = None
+    _IMPERSONATE = ''
+
+if _creq is not None:
+    _SESSION = _creq.Session(impersonate=_IMPERSONATE)
+    # User-Agent 는 impersonate 가 설정한 값을 그대로 둔다 (TLS 지문과 어긋나면 다시 걸림)
+    _SESSION.headers.update({
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+        'Referer': 'https://search.naver.com/',
+    })
+else:
+    _SESSION = requests.Session()
+    _SESSION.headers.update({
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        ),
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+        'Referer': 'https://search.naver.com/',
+    })
+
+
+class NaverBlocked(Exception):
+    """네이버가 검색을 차단했을 때 (403 제한 페이지)."""
+
+
+def _check_blocked(resp):
+    if getattr(resp, 'status_code', 0) == 403 or '검색 서비스 이용이 제한' in resp.text[:40000]:
+        raise NaverBlocked(
+            '네이버가 검색을 차단했습니다. 크롬에서 search.naver.com 접속 후 '
+            '[제한 해제] 보안문자를 통과시키거나 잠시 후 다시 시도하세요.'
+        )
+    return resp
 
 _session_ready = False
 _session_lock  = threading.Lock()
@@ -105,6 +136,7 @@ def _fetch_ingi_first_page(keyword: str) -> str:
         params={'ssc': 'tab.nx.all', 'where': 'nexearch', 'sm': 'tab_jum', 'query': keyword},
         timeout=15,
     )
+    _check_blocked(resp)
     # lb_api URL 추출 후 캐시 (이후 페이지 호출에 사용)
     if keyword not in _ingi_api_url_cache:
         m = re.search(
@@ -196,6 +228,7 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
             },
             timeout=15,
         )
+    _check_blocked(resp)
     resp.raise_for_status()
     return resp.text
 
@@ -380,6 +413,8 @@ def search_naver(
         try:
             raw = _fetch(keyword, search_type, start)
             html = _unwrap_search_html(raw) if search_type == '인기글' else raw
+        except NaverBlocked:
+            raise          # 차단은 조용히 0건으로 넘기지 말고 화면에 알린다
         except Exception:
             break
 
@@ -544,6 +579,7 @@ def fetch_popular_section(keyword: str) -> str:
                         params={'where': 'nexearch', 'sm': 'top_hty',
                                 'fbm': '0', 'ie': 'utf8', 'query': keyword},
                         timeout=15)
+    _check_blocked(resp)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'lxml')
     for h2 in soup.find_all('h2'):
@@ -561,6 +597,7 @@ def fetch_first_page_titles(keyword: str, tab: str) -> list:
     _init_session()
     resp = _SESSION.get('https://search.naver.com/search.naver',
                         params=_first_page_params(keyword, tab), timeout=15)
+    _check_blocked(resp)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'lxml')
 

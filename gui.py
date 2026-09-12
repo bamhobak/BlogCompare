@@ -19,7 +19,7 @@ from crawler import (
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
 )
 
-VERSION = 'v1.1.01'
+VERSION = 'v1.1.02'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
