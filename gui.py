@@ -19,7 +19,7 @@ from crawler import (
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
 )
 
-VERSION = 'v1.1.02'
+VERSION = 'v1.1.03'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -978,7 +978,24 @@ class App:
         except Exception:
             return (0, 0, 0)
 
+    @staticmethod
+    def _sweep_update_temp():
+        """이전 업데이트가 남긴 임시 폴더(받은 zip·압축 해제본)를 지운다."""
+        import shutil
+        import tempfile
+        import time
+        try:
+            for d in Path(tempfile.gettempdir()).glob('bc_upd_*'):
+                try:
+                    if d.is_dir() and time.time() - d.stat().st_mtime > 120:
+                        shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
     def _check_for_update(self):
+        self._sweep_update_temp()
         try:
             r = requests.get(
                 f'https://api.github.com/repos/{_GITHUB_REPO}/releases/latest',
@@ -1002,70 +1019,32 @@ class App:
                     'url': url,
                     'notes': data.get('body', '').strip(),
                 }
-                self.root.after(0, self._show_update_dialog)
+                if not getattr(sys, 'frozen', False):
+                    self._log(f'새 버전 {latest} — 개발 환경에서는 자동 업데이트 안 함')
+                    return
+                self._log(f'새 버전 {latest} 발견 — 자동 업데이트를 시작합니다')
+                self.root.after(0, lambda: self._do_update(url, latest))
             else:
                 self._log(f'업데이트 체크: 최신 버전입니다 ({VERSION})')
         except Exception as e:
             self._log(f'업데이트 체크 실패: {e}')
 
-    def _show_update_dialog(self):
-        info = self._update_info
-        ver = info.get('version', '')
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title('업데이트 알림')
-        dlg.resizable(False, False)
-        dlg.configure(bg=BG)
-        dlg.grab_set()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        dlg.geometry(f'360x190+{(sw - 360) // 2}+{(sh - 190) // 2}')
-
-        tk.Label(dlg, text='업데이트가 있습니다.',
-                 font=FONT_B, bg=BG, fg=FG).pack(pady=(30, 4))
-        tk.Label(dlg, text='업데이트를 진행해주세요.',
-                 font=FONT, bg=BG, fg=FG_DIM).pack()
-        tk.Label(dlg, text=f'{VERSION}  →  {ver}',
-                 font=FONT, bg=BG, fg='#6B7280').pack(pady=(4, 18))
-
-        if not getattr(sys, 'frozen', False):
-            tk.Label(dlg, text='개발 환경에서는 자동 업데이트를 지원하지 않습니다.',
-                     font=FONT, bg=BG, fg='#DC2626').pack()
-            tk.Button(dlg, text='확인', command=dlg.destroy,
-                      bg=ACCENT, fg='white', font=FONT_B,
-                      relief='raised', bd=2, padx=20, pady=4).pack(pady=8)
-            return
-
-        row = tk.Frame(dlg, bg=BG)
-        row.pack()
-
-        def _start():
-            dlg.destroy()
-            self._do_update(info.get('url', ''), ver)
-
-        tk.Button(row, text='업데이트', command=_start,
-                  bg='#1E8259', fg='white', font=FONT_B,
-                  relief='raised', bd=2, padx=18, pady=5, cursor='hand2',
-                  ).pack(side=tk.LEFT, padx=(0, 10))
-        tk.Button(row, text='나중에', command=dlg.destroy,
-                  bg='#9CA3AF', fg='white', font=FONT_B,
-                  relief='raised', bd=2, padx=18, pady=5, cursor='hand2',
-                  ).pack(side=tk.LEFT)
-
     def _do_update(self, url: str, new_version: str):
         import tempfile, zipfile
 
         dlg = tk.Toplevel(self.root)
-        dlg.title('업데이트 중...')
+        dlg.title('업데이트')
         dlg.resizable(False, False)
         dlg.configure(bg=BG)
         dlg.grab_set()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        dlg.geometry(f'360x130+{(sw - 360) // 2}+{(sh - 130) // 2}')
+        dlg.geometry(f'360x160+{(sw - 360) // 2}+{(sh - 160) // 2}')
 
+        tk.Label(dlg, text=f'{VERSION}  →  {new_version}',
+                 font=FONT_B, bg=BG, fg=FG).pack(pady=(18, 2))
         status_lbl = tk.Label(dlg, text='준비 중...', font=FONT, bg=BG, fg=FG_DIM)
-        status_lbl.pack(pady=(22, 8))
+        status_lbl.pack(pady=(2, 8))
         prog = ttk.Progressbar(dlg, length=320, mode='determinate', maximum=100)
         prog.pack(padx=20)
 
@@ -1114,6 +1093,7 @@ class App:
                 dst  = str(current_dir).replace("'", "''")
                 log  = str(log_path).replace("'", "''")
                 exe  = str(current_dir / 'BlogCompare.exe').replace("'", "''")
+                errlog = str(current_dir / 'update_error.log').replace("'", "''")
                 pid  = os.getpid()
 
                 ps1 = f"""$appPid = {pid}
@@ -1122,14 +1102,37 @@ Start-Sleep -Seconds 2
 $src = '{src}'
 $dst = '{dst}'
 $log = '{log}'
+# onefile 앱이 물려준 PyInstaller 변수(_MEIPASS2 등)를 지운다. 그대로 두면
+# 새 exe 가 '이미 압축 해제됐다'고 착각해 구버전 임시폴더의 python DLL 을
+# 찾다가 죽는다("Failed to load Python DLL").
+Get-ChildItem Env: | Where-Object {{ $_.Name -like '_PYI*' -or $_.Name -eq '_MEIPASS2' }} |
+    ForEach-Object {{ Remove-Item -LiteralPath ('Env:' + $_.Name) -ErrorAction SilentlyContinue }}
 'START' | Out-File $log -Encoding UTF8
 try {{
-    # robocopy: 경로 문자열 계산 없이 트리 복사 (설정 파일은 덮어쓰지 않음)
-    robocopy $src $dst /E /R:3 /W:2 /XF settings.json config.json | Out-Null
-    if ($LASTEXITCODE -ge 8) {{
-        throw "robocopy failed: $LASTEXITCODE"
+    # robocopy 는 이름이 아니라 절대경로로 부른다 — PATH 에 %SystemRoot% 가
+    # 확장되지 않은 채 들어간 PC 에서는 이름 해석이 실패해 조용히 무효가 된다.
+    $rc = Join-Path $env:SystemRoot 'System32\\Robocopy.exe'
+    if (Test-Path -LiteralPath $rc) {{
+        & $rc $src $dst /E /R:3 /W:2 /XF settings.json config.json | Out-Null
+        if ($LASTEXITCODE -ge 8) {{ throw "robocopy failed: $LASTEXITCODE" }}
+    }} else {{
+        # robocopy 가 없는 PC 폴백: 설정 파일만 빼고 직접 복사
+        'NO_ROBOCOPY' | Out-File $log -Append -Encoding UTF8
+        $skip = @('settings.json', 'config.json')
+        Get-ChildItem -LiteralPath $src -Recurse -File | ForEach-Object {{
+            if ($skip -notcontains $_.Name) {{
+                $rel = $_.FullName.Substring($src.Length).TrimStart('\\')
+                $to = Join-Path $dst $rel
+                $dir = Split-Path $to -Parent
+                if (-not (Test-Path -LiteralPath $dir)) {{
+                    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                }}
+                Copy-Item -LiteralPath $_.FullName -Destination $to -Force
+            }}
+        }}
     }}
     'COPY_DONE' | Out-File $log -Append -Encoding UTF8
+    Remove-Item -LiteralPath '{errlog}' -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath '{exe}') {{
         'LAUNCH' | Out-File $log -Append -Encoding UTF8
         Start-Process -FilePath '{exe}'
@@ -1138,9 +1141,22 @@ try {{
     }}
 }} catch {{
     "ERROR: $_" | Out-File $log -Append -Encoding UTF8
+    # 실패하면 앱 폴더에 로그를 남기고(원인 추적용) 구버전이라도 다시 띄운다
+    Copy-Item -LiteralPath $log -Destination '{errlog}' -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath '{exe}') {{ Start-Process -FilePath '{exe}' }}
 }}
-Start-Sleep -Seconds 3
-Remove-Item -Path (Split-Path $log) -Recurse -Force -ErrorAction SilentlyContinue
+# 받은 파일(zip·압축 해제본·이 스크립트)은 PC 에 남기지 않는다. 실행 중인
+# 스크립트가 자기 폴더를 지우면 실패할 수 있어 별도 프로세스로 떼어낸다.
+$tmp = Split-Path $log
+$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+if (Test-Path -LiteralPath $ps) {{
+    Start-Process -FilePath $ps -WindowStyle Hidden -ArgumentList @(
+        '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        "Start-Sleep -Seconds 6; Remove-Item -LiteralPath '$tmp' -Recurse -Force -ErrorAction SilentlyContinue")
+}} else {{
+    Start-Sleep -Seconds 3
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}}
 """
                 ps1_path = tmp_dir / 'update_apply.ps1'
                 ps1_path.write_text(ps1, encoding='utf-8-sig')
@@ -1155,6 +1171,11 @@ Remove-Item -Path (Split-Path $log) -Recurse -Force -ErrorAction SilentlyContinu
     def _launch_updater(self, ps1_path: Path):
         import ctypes
         try:
+            # ShellExecuteW 는 지금 프로세스의 환경을 그대로 물려준다.
+            # PyInstaller 변수가 따라가면 새 exe 가 부팅에 실패한다.
+            for key in [k for k in os.environ
+                        if k.startswith('_PYI') or k == '_MEIPASS2']:
+                os.environ.pop(key, None)
             args = f'-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{ps1_path}"'
             ret = ctypes.windll.shell32.ShellExecuteW(None, 'open', 'powershell', args, None, 0)
             if ret <= 32:
