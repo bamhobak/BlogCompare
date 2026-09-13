@@ -18,36 +18,83 @@ except Exception:      # curl_cffi 없으면 기존 requests 로 폴백 (차단�
     _creq = None
     _IMPERSONATE = ''
 
-if _creq is not None:
-    _SESSION = _creq.Session(impersonate=_IMPERSONATE)
-    # User-Agent 는 impersonate 가 설정한 값을 그대로 둔다 (TLS 지문과 어긋나면 다시 걸림)
-    _SESSION.headers.update({
-        'Accept-Language': 'ko-KR,ko;q=0.9',
-        'Referer': 'https://search.naver.com/',
-    })
-else:
-    _SESSION = requests.Session()
-    _SESSION.headers.update({
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-        ),
-        'Accept-Language': 'ko-KR,ko;q=0.9',
-        'Referer': 'https://search.naver.com/',
-    })
+_HEADERS = {
+    'Accept-Language': 'ko-KR,ko;q=0.9',
+    'Referer': 'https://search.naver.com/',
+}
+# requests 폴백일 때만 UA 를 직접 넣는다.
+# curl_cffi 는 impersonate 가 정한 UA 를 그대로 써야 TLS 지문과 어긋나지 않는다.
+_FALLBACK_UA = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+)
+
+
+def _mk_session():
+    if _creq is not None:
+        s = _creq.Session(impersonate=_IMPERSONATE)
+        s.headers.update(_HEADERS)
+    else:
+        s = requests.Session()
+        s.headers.update(dict(_HEADERS, **{'User-Agent': _FALLBACK_UA}))
+    return s
+
+
+_SESSION = _mk_session()
+
+# 실측(2026-09-13): 검색 요청은 **세션(쿠키)당 정확히 100회**가 상한이다.
+#   · 101회째부터 403 '검색 서비스 이용이 제한' 페이지
+#   · 같은 세션으로는 쉬어도 안 풀리고, 새 세션이면 즉시 통과(연속 5회 확인)
+#   · 요청 간격을 늘려도 상한은 그대로다 → 딜레이가 아니라 세션 교체가 답
+# 그래서 상한에 닿기 전에 미리 갈아탄다.
+ROTATE_AT = 80
+_req_count = 0
 
 
 class NaverBlocked(Exception):
     """네이버가 검색을 차단했을 때 (403 제한 페이지)."""
 
 
+def _rotate_session():
+    """쿠키를 버리고 새 세션으로. 세션당 요청 한도가 여기서 리셋된다."""
+    global _SESSION, _session_ready, _req_count
+    _SESSION = _mk_session()
+    _session_ready = False
+    _req_count = 0
+
+
+def _is_blocked(resp) -> bool:
+    return (getattr(resp, 'status_code', 0) == 403
+            or '검색 서비스 이용이 제한' in resp.text[:40000])
+
+
 def _check_blocked(resp):
-    if getattr(resp, 'status_code', 0) == 403 or '검색 서비스 이용이 제한' in resp.text[:40000]:
+    if _is_blocked(resp):
         raise NaverBlocked(
             '네이버가 검색을 차단했습니다. 크롬에서 search.naver.com 접속 후 '
             '[제한 해제] 보안문자를 통과시키거나 잠시 후 다시 시도하세요.'
         )
     return resp
+
+
+def _get(url, **kw):
+    """검색 요청 한 번. 상한이 가까우면 미리 세션을 갈아타고,
+    그래도 막히면 세션을 새로 만들어 재시도한다(총 3회)."""
+    global _req_count
+    for attempt in range(3):
+        if _req_count >= ROTATE_AT:
+            _rotate_session()
+            _init_session()
+        resp = _SESSION.get(url, **kw)
+        _req_count += 1
+        if not _is_blocked(resp):
+            return resp
+        # 막혔다 — 세션을 버리고 새로 만들어 다시 시도
+        _rotate_session()
+        _init_session()
+        if attempt < 2:
+            time.sleep(1.0 + attempt * 2)
+    return resp          # 3회 모두 차단 — 호출부가 _check_blocked 로 처리
 
 _session_ready = False
 _session_lock  = threading.Lock()
@@ -131,7 +178,7 @@ def _fetch_ingi_first_page(keyword: str) -> str:
     인기글 1페이지: 메인 네이버 검색 페이지 HTML을 반환.
     브라우저와 동일한 SSR 결과를 포함하며, lb_api URL도 캐시한다.
     """
-    resp = _SESSION.get(
+    resp = _get(
         'https://search.naver.com/search.naver',
         params={'ssc': 'tab.nx.all', 'where': 'nexearch', 'sm': 'tab_jum', 'query': keyword},
         timeout=15,
@@ -153,7 +200,10 @@ def _fetch_ingi_first_page(keyword: str) -> str:
 
 
 def _init_session():
-    global _session_ready
+    """새 세션 예열. 인기글(s.search API)은 search.naver.com 방문 쿠키가 없으면
+    첫 요청부터 403 이라 이 과정이 필요하다. 여기서 쓴 검색 1회도 세션 한도(100회)에
+    포함되므로 카운트에 반영한다."""
+    global _session_ready, _req_count
     with _session_lock:
         if not _session_ready:
             try:
@@ -163,6 +213,7 @@ def _init_session():
                     params={'where': 'view', 'sm': 'tab_hty.brg', 'query': '블로그'},
                     timeout=10,
                 )
+                _req_count += 1
                 _session_ready = True
             except Exception:
                 pass
@@ -190,10 +241,10 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
             base_url = _ingi_api_url_cache.get(keyword, '')
         if base_url:
             sep = '&' if '?' in base_url else '?'
-            resp = _SESSION.get(base_url + sep + f'start={start}', timeout=15)
+            resp = _get(base_url + sep + f'start={start}', timeout=15)
         else:
             # lb_api 추출 실패 시 기존 방식 fallback
-            resp = _SESSION.get(
+            resp = _get(
                 'https://s.search.naver.com/p/review/50/search.naver',
                 params={
                     'query':    keyword,
@@ -207,7 +258,7 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
     elif search_type == '신뢰도':
         # page 파라미터는 효과 없음 — start만 결과를 제어
         # start=1 → 1위~20위, start=21 → 21위~40위, ..., start=161 → 161위~180위
-        resp = _SESSION.get(
+        resp = _get(
             'https://search.naver.com/search.naver',
             params={
                 'query': keyword,
@@ -218,7 +269,7 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
             timeout=15,
         )
     else:  # 블로그
-        resp = _SESSION.get(
+        resp = _get(
             'https://search.naver.com/search.naver',
             params={
                 'ssc':   'tab.blog.all',
@@ -575,10 +626,10 @@ def fetch_popular_section(keyword: str) -> str:
     제목은 키워드 주제에 따라 다름: 'IT·컴퓨터 인기글', '맛집 인기글', '인기글' 등.
     """
     _init_session()
-    resp = _SESSION.get('https://search.naver.com/search.naver',
-                        params={'where': 'nexearch', 'sm': 'top_hty',
-                                'fbm': '0', 'ie': 'utf8', 'query': keyword},
-                        timeout=15)
+    resp = _get('https://search.naver.com/search.naver',
+                params={'where': 'nexearch', 'sm': 'top_hty',
+                        'fbm': '0', 'ie': 'utf8', 'query': keyword},
+                timeout=15)
     _check_blocked(resp)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'lxml')
@@ -595,8 +646,8 @@ def fetch_first_page_titles(keyword: str, tab: str) -> list:
     추가 로드(스크롤) 없이 첫 응답에 실린 글만 반환: [{'title', 'link'}]
     """
     _init_session()
-    resp = _SESSION.get('https://search.naver.com/search.naver',
-                        params=_first_page_params(keyword, tab), timeout=15)
+    resp = _get('https://search.naver.com/search.naver',
+                params=_first_page_params(keyword, tab), timeout=15)
     _check_blocked(resp)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'lxml')

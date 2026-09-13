@@ -19,7 +19,7 @@ from crawler import (
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
 )
 
-VERSION = 'v1.1.04'
+VERSION = 'v1.1.05'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -110,17 +110,74 @@ FONT_SM = ('Malgun Gothic', 10)
 FONT_U  = ('Malgun Gothic', 9, 'underline')
 
 
+def _enable_dpi_awareness():
+    """윈도우 디스플레이 배율(125%·150% 등)에서 글씨가 뭉개지는 것을 막는다.
+
+    DPI 를 모르는 프로그램은 윈도우가 96DPI 로 그린 화면을 확대해서 보여주기 때문에
+    글씨가 흐릿해진다. 프로세스를 DPI 인식으로 선언하면 윈도우가 늘리지 않고
+    우리가 직접 실제 해상도로 그리게 된다(= 선명).
+    반드시 Tk 창을 만들기 전에 호출해야 한다.
+    """
+    if sys.platform != 'win32':
+        return
+    import ctypes
+    try:    # Windows 10 1703+ : 모니터별 DPI v2 (모니터 옮겨도 선명)
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:    # Windows 8.1+ : 모니터별 DPI v1
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:    # Vista+ : 시스템 DPI
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+# 화면 배율. root 생성 뒤 _apply_scaling() 에서 실제 값으로 채운다.
+SCALE = 1.0
+
+
+def px(n) -> int:
+    """96DPI 기준 픽셀값을 현재 배율로 환산. 폰트·문자폭이 아닌 '픽셀' 값에만 쓴다."""
+    return int(round(n * SCALE))
+
+
+def _apply_scaling(root) -> float:
+    """DPI 인식을 켜면 창이 실제 해상도로 그려져 그대로 두면 모든 게 작아진다.
+    Tk 의 포인트→픽셀 환산 배율을 실제 DPI 에 맞춰, 포인트로 지정한 글꼴이
+    배율만큼 커지도록 한다. 픽셀로 지정한 값은 px() 로 따로 환산한다."""
+    global SCALE
+    try:
+        dpi = root.winfo_fpixels('1i')          # 1인치에 해당하는 픽셀 수
+    except Exception:
+        dpi = 96.0
+    if not dpi or dpi <= 0:
+        dpi = 96.0
+    SCALE = dpi / 96.0
+    root.tk.call('tk', 'scaling', dpi / 72.0)   # 1포인트 = 1/72인치
+    return SCALE
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f'Blog Compare {VERSION}')
-        self.root.geometry('1050x860')
-        self.root.minsize(900, 600)
+        # 배율이 큰 화면(150% 등)에서 창이 화면 밖으로 넘치지 않게 맞춘다
+        win_w = min(px(1050), self.root.winfo_screenwidth()  - px(40))
+        win_h = min(px(860),  self.root.winfo_screenheight() - px(80))
+        self.root.geometry(f'{win_w}x{win_h}')
+        self.root.minsize(min(px(900), win_w), min(px(600), win_h))
         self.root.configure(bg=BG)
 
         self._stop_flag  = threading.Event()
         self._is_running = False
         self._post_links: dict = {}
+        self._res_prev_keyword = None     # 실시간 결과 표시용
+        self._res_total = 0
         self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
         self._update_info: dict = {}
         self._saved_at: str = ''
@@ -151,7 +208,7 @@ class App:
                     bordercolor='#E2E8F0', arrowcolor='#94A3B8')
         s.map('TScrollbar', background=[('active', '#94A3B8'), ('pressed', '#64748B')])
 
-        s.configure('Treeview', font=FONT, rowheight=24,
+        s.configure('Treeview', font=FONT, rowheight=px(24),
                     background=BG_CARD, fieldbackground=BG_CARD,
                     foreground=FG, borderwidth=0)
         s.configure('Treeview.Heading', font=FONT_B, background='#E9ECEF',
@@ -161,7 +218,7 @@ class App:
               foreground=[('selected', FG)])
 
         s.configure('TProgressbar', troughcolor='#E5E7EB',
-                    background='#3B82F6', borderwidth=0, thickness=6)
+                    background='#3B82F6', borderwidth=0, thickness=px(6))
 
         # 모드 선택 라디오 (배경 강조)
         s.configure('Mode.TRadiobutton', background='#DBEAFE',
@@ -174,14 +231,14 @@ class App:
     def _build_ui(self):
         pane = tk.PanedWindow(
             self.root, orient=tk.HORIZONTAL,
-            sashwidth=4, sashrelief='flat', bg=BORDER,
+            sashwidth=px(4), sashrelief='flat', bg=BORDER,
         )
         pane.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        left  = ttk.Frame(pane, width=310)
+        left  = ttk.Frame(pane, width=px(310))
         right = ttk.Frame(pane)
-        pane.add(left,  minsize=250)
-        pane.add(right, minsize=550)
+        pane.add(left,  minsize=px(250))
+        pane.add(right, minsize=px(550))
         self.root.after(50, lambda: pane.sash_place(0, 320, 0))
 
         self._build_left(left)
@@ -334,7 +391,7 @@ class App:
         lf_log = ttk.LabelFrame(parent, text='로그')
         lf_log.pack(fill=tk.X, padx=(2, 4), pady=(0, 4))
         lf_log.pack_propagate(False)
-        lf_log.configure(height=110)
+        lf_log.configure(height=px(110))
         self.lf_log = lf_log
 
         ls = ttk.Scrollbar(lf_log)
@@ -374,7 +431,8 @@ class App:
         ]
         for col, w, anc, stretch in specs:
             self.tree.heading(col, text=col, anchor=tk.CENTER)
-            self.tree.column(col, width=w, anchor=anc, minwidth=40, stretch=stretch)
+            self.tree.column(col, width=px(w), anchor=anc,
+                             minwidth=px(40), stretch=stretch)
 
         self.tree.bind('<Double-1>', self._on_double_click)
         self.tree.bind('<ButtonRelease-1>', self._on_click)
@@ -411,7 +469,7 @@ class App:
 
         wrap = tk.Frame(lf_sum, bg=BG_CARD)
         wrap.pack(fill=tk.BOTH, expand=True)
-        canvas = tk.Canvas(wrap, height=280, bg=BG_CARD, highlightthickness=0)
+        canvas = tk.Canvas(wrap, height=px(280), bg=BG_CARD, highlightthickness=0)
         sb = ttk.Scrollbar(wrap, command=canvas.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -442,7 +500,8 @@ class App:
             ('제목',   420, tk.W,      True),
         ):
             self.kwchk_det.heading(col, text=col, anchor=tk.CENTER)
-            self.kwchk_det.column(col, width=w, anchor=anc, minwidth=40, stretch=stretch)
+            self.kwchk_det.column(col, width=px(w), anchor=anc,
+                                  minwidth=px(40), stretch=stretch)
         self.kwchk_det.tag_configure('ok', foreground='#1E8259')
         self.kwchk_det.tag_configure('no', foreground='#9CA3AF')
         self.kwchk_det.bind('<Double-1>', self._on_kwchk_double)
@@ -683,6 +742,11 @@ class App:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        # 실시간 표시 상태 — 키워드 하나가 끝날 때마다 결과를 이어 붙인다
+        self._res_prev_keyword = None
+        self._res_total = 0
+        self.tree.tag_configure('sep', background='#D1D5DB', foreground='#374151')
+
         self.progress['value'] = 0
         self.btn_search.config(text='중지', bg='#EF4444', activebackground='#DC2626')
         self._log('조회 시작')
@@ -760,44 +824,29 @@ class App:
 
             all_matched.extend(matched)
 
-        self.root.after(0, self._show_results, all_matched, target_ids, global_resolved)
+            # 전부 끝날 때까지 기다리지 않고, 이 키워드 몫을 바로 화면에 올린다
+            self.root.after(0, self._append_results,
+                            keyword, matched, dict(global_resolved))
+
+        self.root.after(0, self._finish_results, len(all_matched))
 
     def _on_progress(self, pct: float):
         self.progress['value'] = pct
 
-    def _show_results(self, matched: list, target_ids: set, resolved_map: dict):
-        self._is_running = False
-        self.btn_search.config(
-            text='검색', bg=ACCENT, activebackground='#2A5090', state=tk.NORMAL
-        )
-        self.progress['value'] = 100
+    def _append_results(self, keyword: str, matched: list, resolved_map: dict):
+        """키워드 하나 분량의 결과를 표 맨 아래에 이어 붙인다(조회 중 실시간 호출)."""
+        reverse_map = {v: k for k, v in resolved_map.items()}
 
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self._post_links.clear()
-
-        reverse_map  = {v: k for k, v in resolved_map.items()}
-        prev_keyword = None
-
-        self.tree.tag_configure('sep', background='#D1D5DB', foreground='#374151')
+        # 키워드가 바뀌면 구분줄을 먼저 넣는다 (결과가 없는 키워드도 지나간 걸 보여준다)
+        if keyword != self._res_prev_keyword:
+            self.tree.insert(
+                '', tk.END,
+                values=(f'[{keyword}]', '', '', '', '', '', ''),
+                tags=('sep',),
+            )
+            self._res_prev_keyword = keyword
 
         for post in matched:
-            keyword = post.get('keyword', '')
-
-            if prev_keyword is not None and keyword != prev_keyword:
-                self.tree.insert(
-                    '', tk.END,
-                    values=(f'[{keyword}]', '', '', '', '', '', ''),
-                    tags=('sep',),
-                )
-            elif prev_keyword is None:
-                self.tree.insert(
-                    '', tk.END,
-                    values=(f'[{keyword}]', '', '', '', '', '', ''),
-                    tags=('sep',),
-                )
-            prev_keyword = keyword
-
             short_link = (
                 post['link'][:37] + '...'
                 if len(post['link']) > 40
@@ -814,17 +863,30 @@ class App:
                     keyword,
                     post['rank'],
                     post['title'],
-                    post['blog_name'],
+                    post.get('blog_name', ''),
                     display_id,
-                    post['date'],
+                    post.get('date', ''),
                     short_link,
                 ),
             )
             self._post_links[iid] = post['link']
 
+        self._res_total += len(matched)
+
+        # 방금 추가한 줄이 보이도록 따라 내려간다
+        children = self.tree.get_children()
+        if children:
+            self.tree.see(children[-1])
+
+    def _finish_results(self, total: int):
+        self._is_running = False
+        self.btn_search.config(
+            text='검색', bg=ACCENT, activebackground='#2A5090', state=tk.NORMAL
+        )
+        self.progress['value'] = 100
         self._log(
             '조회 종료',
-            error_suffix='조회된 포스팅이 없습니다.' if not matched else '',
+            error_suffix='조회된 포스팅이 없습니다.' if not total else '',
         )
 
 
@@ -1039,7 +1101,8 @@ class App:
         dlg.grab_set()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        dlg.geometry(f'360x160+{(sw - 360) // 2}+{(sh - 160) // 2}')
+        dw, dh = px(360), px(160)
+        dlg.geometry(f'{dw}x{dh}+{(sw - dw) // 2}+{(sh - dh) // 2}')
 
         tk.Label(dlg, text=f'{VERSION}  →  {new_version}',
                  font=FONT_B, bg=BG, fg=FG).pack(pady=(18, 2))
@@ -1187,7 +1250,9 @@ if (Test-Path -LiteralPath $ps) {{
 
 
 def main():
+    _enable_dpi_awareness()        # tk.Tk() 보다 반드시 먼저
     root = tk.Tk()
+    _apply_scaling(root)
     App(root)
     root.mainloop()
 
