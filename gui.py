@@ -19,7 +19,7 @@ from crawler import (
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
 )
 
-VERSION = 'v1.1.05'
+VERSION = 'v1.1.06'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -98,16 +98,28 @@ def _gist_push(token: str, gist_id: str, ids: list, counts: dict) -> str:
     return r.json().get('id', gist_id)
 
 
-BG      = '#F4F6F8'
+# ── 팔레트: C안 '고밀도 편집형' ──────────────────────────────────────
+# 흰 바탕 + 잉크 네이비 한 축 + 주황 포인트 하나. 면을 칠해 나누지 않고
+# 얇은 선과 글꼴 굵기로 나눈다. 행 높이를 줄여 한 화면에 더 담는다.
+BG      = '#FFFFFF'
 BG_CARD = '#FFFFFF'
-FG      = '#1A1A2E'
-FG_DIM  = '#6B7280'
-BORDER  = '#D1D5DB'
-ACCENT  = '#1A3A6B'
+FG      = '#111418'
+FG_DIM  = '#5B646E'
+BORDER  = '#C8CDD4'
+ACCENT  = '#17224D'   # 잉크 네이비 — 제목·버튼·표 머리
+POINT   = '#C2410C'   # 주황 — 키워드 구분줄·진행바
+HIT     = '#15803D'   # 초록 — 목표 순위 안에 든 글
+ROW_ALT = '#F5F6F8'   # 줄무늬
+SEP_BG  = '#E9ECF1'   # 키워드 구분줄 바탕
+LINE_2  = '#E3E6EA'   # 더 옅은 구분선
 FONT    = ('Malgun Gothic', 9)
 FONT_B  = ('Malgun Gothic', 9, 'bold')
 FONT_SM = ('Malgun Gothic', 10)
 FONT_U  = ('Malgun Gothic', 9, 'underline')
+FONT_LF = ('Malgun Gothic', 8, 'bold')   # LabelFrame 제목 (작게)
+
+# 순위 강조 기준 — 이 순위 안(포함)에 들면 행을 초록으로 표시
+HIT_RANK = {'신뢰도': 20, '블로그': 5}
 
 
 def _enable_dpi_awareness():
@@ -178,6 +190,7 @@ class App:
         self._post_links: dict = {}
         self._res_prev_keyword = None     # 실시간 결과 표시용
         self._res_total = 0
+        self._res_hit_rank = None         # 초록 강조 기준 순위
         self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
         self._update_info: dict = {}
         self._saved_at: str = ''
@@ -199,32 +212,35 @@ class App:
         s.configure('TFrame', background=BG)
         s.configure('TLabel', background=BG, foreground=FG)
         s.configure('TRadiobutton', background=BG, foreground=FG)
-        s.configure('TLabelframe', background=BG, bordercolor=BORDER, relief='groove')
-        s.configure('TLabelframe.Label', font=FONT_B, foreground='#374151', background=BG)
+        s.configure('TLabelframe', background=BG, bordercolor=BORDER, relief='solid')
+        s.configure('TLabelframe.Label', font=FONT_LF, foreground=ACCENT, background=BG)
         s.configure('TSpinbox', fieldbackground=BG_CARD, bordercolor=BORDER,
-                    arrowcolor='#6B7280', arrowsize=12)
+                    arrowcolor=FG_DIM, arrowsize=12)
         s.configure('TPanedwindow', background=BORDER)
-        s.configure('TScrollbar', troughcolor='#F1F3F5', background='#CBD5E1',
-                    bordercolor='#E2E8F0', arrowcolor='#94A3B8')
-        s.map('TScrollbar', background=[('active', '#94A3B8'), ('pressed', '#64748B')])
+        s.configure('TScrollbar', troughcolor='#FFFFFF', background='#C8CDD4',
+                    bordercolor=LINE_2, arrowcolor='#8A929B')
+        s.map('TScrollbar', background=[('active', '#A7B0BA'), ('pressed', '#8A929B')])
 
-        s.configure('Treeview', font=FONT, rowheight=px(24),
+        # 표: 행 높이를 줄여 한 화면에 더 담는다(고밀도)
+        s.configure('Treeview', font=FONT, rowheight=px(22),
                     background=BG_CARD, fieldbackground=BG_CARD,
                     foreground=FG, borderwidth=0)
-        s.configure('Treeview.Heading', font=FONT_B, background='#E9ECEF',
-                    foreground='#374151', relief='flat', padding=(0, 5))
-        s.map('Treeview.Heading', background=[('active', '#DEE2E6')])
-        s.map('Treeview', background=[('selected', '#DBEAFE')],
-              foreground=[('selected', FG)])
+        # 머리는 면을 칠하지 않고 네이비 글자 + 아래 선으로만 구분
+        s.configure('Treeview.Heading', font=FONT_B, background='#FFFFFF',
+                    foreground=ACCENT, relief='flat', borderwidth=1,
+                    bordercolor=ACCENT, padding=(0, 4))
+        s.map('Treeview.Heading', background=[('active', '#F1F3F5')])
+        s.map('Treeview', background=[('selected', '#DDE3F0')],
+              foreground=[('selected', ACCENT)])
 
-        s.configure('TProgressbar', troughcolor='#E5E7EB',
-                    background='#3B82F6', borderwidth=0, thickness=px(6))
+        s.configure('TProgressbar', troughcolor='#EDEFF2', bordercolor=BORDER,
+                    background=POINT, borderwidth=0, thickness=px(6))
 
-        # 모드 선택 라디오 (배경 강조)
-        s.configure('Mode.TRadiobutton', background='#DBEAFE',
+        # 모드 선택 라디오 (면 대신 네이비 테두리로 구분)
+        s.configure('Mode.TRadiobutton', background=BG_CARD,
                     foreground=FG, font=FONT_B)
         s.map('Mode.TRadiobutton',
-              background=[('active', '#BFDBFE')])
+              background=[('active', '#F1F3F5')])
 
     # ── UI ────────────────────────────────────────────────────────────────
 
@@ -246,8 +262,8 @@ class App:
 
     def _build_left(self, parent):
         # 모드 선택 (순위 체크 / 키워드 체크) — 배경색으로 구분
-        row_mode = tk.Frame(parent, bg='#DBEAFE',
-                            highlightbackground='#93C5FD', highlightthickness=1)
+        row_mode = tk.Frame(parent, bg=BG_CARD,
+                            highlightbackground=ACCENT, highlightthickness=1)
         row_mode.pack(fill=tk.X, padx=4, pady=(4, 2))
         self.mode_var = tk.StringVar(value='순위 체크')
         for m in ('순위 체크', '키워드 체크'):
@@ -276,8 +292,8 @@ class App:
         ys.pack(side=tk.RIGHT, fill=tk.Y)
         self.id_text = tk.Text(
             lf_id, yscrollcommand=ys.set, font=FONT, wrap=tk.NONE, undo=True,
-            bg=BG_CARD, fg=FG, relief='flat', insertbackground=FG,
-            selectbackground='#BFDBFE', bd=0, padx=4, pady=4,
+            bg=BG_CARD, fg=ACCENT, relief='flat', insertbackground=FG,
+            selectbackground='#DDE3F0', bd=0, padx=4, pady=2, spacing1=0, spacing3=0,
             height=8,  # 요청 높이 축소 — 라디오 추가로 하단 짤림 방지
         )
         self.id_text.pack(fill=tk.BOTH, expand=True)
@@ -288,15 +304,17 @@ class App:
         lf_search.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 3))
 
         # 남는 세로 공간은 키워드 입력칸이 채움 (하단 빈 공간 방지)
-        kw_frame = tk.Frame(lf_search, bg=BG_CARD, relief='solid', bd=1)
+        kw_frame = tk.Frame(lf_search, bg=BG_CARD, relief='solid', bd=1,
+                            highlightbackground=BORDER)
         kw_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 4))
         kw_ys = ttk.Scrollbar(kw_frame)
         kw_ys.pack(side=tk.RIGHT, fill=tk.Y)
         self.kw_text = tk.Text(
             kw_frame, yscrollcommand=kw_ys.set,
-            font=FONT, bg=BG_CARD, fg=FG,
+            font=FONT, bg=BG_CARD, fg=ACCENT,
             insertbackground=FG, relief='flat', bd=0,
-            padx=4, pady=3, height=10, wrap=tk.NONE,
+            padx=4, pady=2, height=10, wrap=tk.NONE,
+            spacing1=0, spacing3=0,
         )
         self.kw_text.pack(fill=tk.BOTH, expand=True)
         kw_ys.config(command=self.kw_text.yview)
@@ -308,8 +326,8 @@ class App:
         self.btn_search = tk.Button(
             row_btn, text='검색', command=self._toggle_search,
             bg=ACCENT, fg='white', font=FONT_B,
-            relief='raised', bd=2, cursor='hand2',
-            activebackground='#2A5090', activeforeground='white',
+            relief='solid', bd=1, cursor='hand2',
+            activebackground='#24336B', activeforeground='white',
             pady=4,
         )
         self.btn_search.pack(fill=tk.X)
@@ -334,9 +352,9 @@ class App:
         ).pack(side=tk.LEFT, padx=(8, 0))
         self.btn_save_gist = tk.Button(
             row_cnt, text='아이디&설정 저장', command=self._save_to_gist,
-            bg='#9CA3AF', fg='white', font=('Malgun Gothic', 8),
-            relief='raised', bd=1, cursor='hand2',
-            activebackground='#6B7280', activeforeground='white',
+            bg=BG_CARD, fg=ACCENT, font=('Malgun Gothic', 8, 'bold'),
+            relief='solid', bd=1, cursor='hand2',
+            activebackground='#F1F3F5', activeforeground=ACCENT,
             padx=7, pady=2,
         )
         self.btn_save_gist.pack(side=tk.RIGHT, padx=(0, 2))
@@ -354,8 +372,9 @@ class App:
         ys.pack(side=tk.RIGHT, fill=tk.Y)
         self.kwchk_text = tk.Text(
             lf_kw, yscrollcommand=ys.set, font=FONT, wrap=tk.NONE, undo=True,
-            bg=BG_CARD, fg=FG, relief='flat', insertbackground=FG,
-            selectbackground='#BFDBFE', bd=0, padx=4, pady=4,
+            bg=BG_CARD, fg=ACCENT, relief='flat', insertbackground=FG,
+            selectbackground='#DDE3F0', bd=0, padx=4, pady=2,
+            spacing1=0, spacing3=0,
         )
         self.kwchk_text.pack(fill=tk.BOTH, expand=True)
         ys.config(command=self.kwchk_text.yview)
@@ -502,7 +521,7 @@ class App:
             self.kwchk_det.heading(col, text=col, anchor=tk.CENTER)
             self.kwchk_det.column(col, width=px(w), anchor=anc,
                                   minwidth=px(40), stretch=stretch)
-        self.kwchk_det.tag_configure('ok', foreground='#1E8259')
+        self.kwchk_det.tag_configure('ok', foreground=HIT)
         self.kwchk_det.tag_configure('no', foreground='#9CA3AF')
         self.kwchk_det.bind('<Double-1>', self._on_kwchk_double)
         self._kwchk_links: dict = {}
@@ -745,7 +764,9 @@ class App:
         # 실시간 표시 상태 — 키워드 하나가 끝날 때마다 결과를 이어 붙인다
         self._res_prev_keyword = None
         self._res_total = 0
-        self.tree.tag_configure('sep', background='#D1D5DB', foreground='#374151')
+        # 목표 순위 안(포함)에 들면 초록으로 — 신뢰도 20위, 블로그 5위
+        self._res_hit_rank = HIT_RANK.get(self.type_var.get())
+        self._setup_tree_tags()
 
         self.progress['value'] = 0
         self.btn_search.config(text='중지', bg='#EF4444', activebackground='#DC2626')
@@ -833,6 +854,26 @@ class App:
     def _on_progress(self, pct: float):
         self.progress['value'] = pct
 
+    def _setup_tree_tags(self):
+        """표 행 태그. Tk 8.6 은 칸 단위 색을 지원하지 않아(열 하나만 칠할 수 없다)
+        순위 강조는 그 글의 행 전체를 초록으로 칠해서 나타낸다."""
+        t = self.tree
+        t.tag_configure('sep', background=SEP_BG, foreground=POINT, font=FONT_B)
+        t.tag_configure('odd',      background=BG_CARD, foreground=FG)
+        t.tag_configure('even',     background=ROW_ALT, foreground=FG)
+        t.tag_configure('hit_odd',  background=BG_CARD, foreground=HIT, font=FONT_B)
+        t.tag_configure('hit_even', background=ROW_ALT, foreground=HIT, font=FONT_B)
+
+    def _row_tag(self, rank, idx: int) -> str:
+        """줄무늬 + 순위 강조를 합친 태그 이름."""
+        stripe = 'even' if idx % 2 == 0 else 'odd'
+        limit = self._res_hit_rank
+        try:
+            hit = limit is not None and int(rank) <= limit
+        except (TypeError, ValueError):
+            hit = False
+        return f'hit_{stripe}' if hit else stripe
+
     def _append_results(self, keyword: str, matched: list, resolved_map: dict):
         """키워드 하나 분량의 결과를 표 맨 아래에 이어 붙인다(조회 중 실시간 호출)."""
         reverse_map = {v: k for k, v in resolved_map.items()}
@@ -846,7 +887,7 @@ class App:
             )
             self._res_prev_keyword = keyword
 
-        for post in matched:
+        for row_i, post in enumerate(matched):
             short_link = (
                 post['link'][:37] + '...'
                 if len(post['link']) > 40
@@ -868,6 +909,7 @@ class App:
                     post.get('date', ''),
                     short_link,
                 ),
+                tags=(self._row_tag(post['rank'], row_i),),
             )
             self._post_links[iid] = post['link']
 
