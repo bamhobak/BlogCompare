@@ -17,9 +17,10 @@ from crawler import (
     search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date,
     fetch_first_page_titles, title_matches_keyword, first_page_search_url,
     fetch_popular_section, main_search_url, fetch_monthly_volumes,
+    fetch_blog_profile,
 )
 
-VERSION = 'v1.1.06'
+VERSION = 'v1.1.09'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -98,28 +99,43 @@ def _gist_push(token: str, gist_id: str, ids: list, counts: dict) -> str:
     return r.json().get('id', gist_id)
 
 
-# ── 팔레트: C안 '고밀도 편집형' ──────────────────────────────────────
-# 흰 바탕 + 잉크 네이비 한 축 + 주황 포인트 하나. 면을 칠해 나누지 않고
-# 얇은 선과 글꼴 굵기로 나눈다. 행 높이를 줄여 한 화면에 더 담는다.
-BG      = '#FFFFFF'
-BG_CARD = '#FFFFFF'
-FG      = '#111418'
-FG_DIM  = '#5B646E'
-BORDER  = '#C8CDD4'
-ACCENT  = '#17224D'   # 잉크 네이비 — 제목·버튼·표 머리
-POINT   = '#C2410C'   # 주황 — 키워드 구분줄·진행바
-HIT     = '#15803D'   # 초록 — 목표 순위 안에 든 글
-ROW_ALT = '#F5F6F8'   # 줄무늬
-SEP_BG  = '#E9ECF1'   # 키워드 구분줄 바탕
-LINE_2  = '#E3E6EA'   # 더 옅은 구분선
+# ── 팔레트: E안 '저채도 슬레이트' ─────────────────────────────────────
+# 차가운 회청 바탕 위에 흰 패널이 뜬다. 쓰는 색은 둘뿐 —
+# 구조는 저채도 남보라 하나, 상태는 초록 하나. (주황은 뺐다. 키워드
+# 구분줄은 안내지 경고가 아닌데 주황이 계속 눈을 끌어당겼다.)
+BG      = '#EDF0F3'   # 창 바탕 — 패널이 떠 보이게 한 단계 눌렀다
+BG_CARD = '#FFFFFF'   # 패널·입력칸·표
+FG      = '#1E242B'
+FG_DIM  = '#6B7684'
+BORDER  = '#D7DDE4'
+ACCENT  = '#41557E'   # 저채도 남보라 — 제목·버튼·표 머리·구분줄 글자
+HIT     = '#2F7D56'   # 초록 — 목표 순위 안에 든 글 · O 판정 · 정상 종료
+ROW_ALT = '#F6F8FA'   # 줄무늬
+SEP_BG  = '#E2E8EF'   # 키워드 구분줄 바탕
+HEAD_BG = '#F2F5F8'   # 표 머리띠
+LINE_2  = '#E4E9EF'   # 더 옅은 구분선
+POINT   = ACCENT      # (옛 주황 자리 — 남은 참조가 강조색을 따라가게)
 FONT    = ('Malgun Gothic', 9)
 FONT_B  = ('Malgun Gothic', 9, 'bold')
-FONT_SM = ('Malgun Gothic', 10)
+FONT_SM = ('Malgun Gothic', 9)           # 로그 — 결과표보다 크면 위계가 뒤집힌다
 FONT_U  = ('Malgun Gothic', 9, 'underline')
 FONT_LF = ('Malgun Gothic', 8, 'bold')   # LabelFrame 제목 (작게)
+FONT_TH = ('Malgun Gothic', 8, 'bold')   # 표 머리 — 본문보다 작게
 
 # 순위 강조 기준 — 이 순위 안(포함)에 들면 행을 초록으로 표시
 HIT_RANK = {'신뢰도': 20, '블로그': 5}
+# 이웃확인 — 이웃수가 이 값 이상이면 초록 굵게
+NBR_BIG = 5000
+
+
+def _short_date(d: str) -> str:
+    """'2026.09.08' → 올해면 '09.08', 지난 해면 '25.08.14'.
+    좁은 칸에서 월·일이 먼저 읽히게. 해가 다르면 반드시 보이므로 정보는 안 잃는다."""
+    parts = (d or '').split('.')
+    if len(parts) != 3 or len(parts[0]) != 4:
+        return d
+    y = parts[0]
+    return f'{parts[1]}.{parts[2]}' if y == time.strftime('%Y') else f'{y[2:]}.{parts[1]}.{parts[2]}'
 
 
 def _enable_dpi_awareness():
@@ -191,6 +207,7 @@ class App:
         self._res_prev_keyword = None     # 실시간 결과 표시용
         self._res_total = 0
         self._res_hit_rank = None         # 초록 강조 기준 순위
+        self._nbr_links: dict = {}        # 이웃확인 표 행 → 블로그 주소
         self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
         self._update_info: dict = {}
         self._saved_at: str = ''
@@ -217,32 +234,63 @@ class App:
         s.configure('TSpinbox', fieldbackground=BG_CARD, bordercolor=BORDER,
                     arrowcolor=FG_DIM, arrowsize=12)
         s.configure('TPanedwindow', background=BORDER)
-        s.configure('TScrollbar', troughcolor='#FFFFFF', background='#C8CDD4',
-                    bordercolor=LINE_2, arrowcolor='#8A929B')
-        s.map('TScrollbar', background=[('active', '#A7B0BA'), ('pressed', '#8A929B')])
+        s.configure('TScrollbar', troughcolor='#F6F8FA', background='#C3CCD6',
+                    bordercolor=LINE_2, arrowcolor='#8E99A6')
+        s.map('TScrollbar', background=[('active', '#A7B3C0'), ('pressed', '#8E99A6')])
 
         # 표: 행 높이를 줄여 한 화면에 더 담는다(고밀도)
         s.configure('Treeview', font=FONT, rowheight=px(22),
                     background=BG_CARD, fieldbackground=BG_CARD,
                     foreground=FG, borderwidth=0)
-        # 머리는 면을 칠하지 않고 네이비 글자 + 아래 선으로만 구분
-        s.configure('Treeview.Heading', font=FONT_B, background='#FFFFFF',
+        # 머리는 연한 띠 + 남보라 글자. 본문보다 한 단계 작게 해서 표가 주인공이 되게
+        s.configure('Treeview.Heading', font=FONT_TH, background=HEAD_BG,
                     foreground=ACCENT, relief='flat', borderwidth=1,
-                    bordercolor=ACCENT, padding=(0, 4))
-        s.map('Treeview.Heading', background=[('active', '#F1F3F5')])
-        s.map('Treeview', background=[('selected', '#DDE3F0')],
+                    bordercolor=BORDER, padding=(0, 5))
+        s.map('Treeview.Heading', background=[('active', '#E7EBF3')])
+        s.map('Treeview', background=[('selected', '#E0E6F2')],
               foreground=[('selected', ACCENT)])
 
-        s.configure('TProgressbar', troughcolor='#EDEFF2', bordercolor=BORDER,
-                    background=POINT, borderwidth=0, thickness=px(6))
+        # 진행바는 조회 중에만 뜻이 있다 — 늘 두껍게 있을 필요가 없어 얇게
+        s.configure('TProgressbar', troughcolor=LINE_2, bordercolor=BORDER,
+                    background=ACCENT, borderwidth=0, thickness=px(4))
 
-        # 모드 선택 라디오 (면 대신 네이비 테두리로 구분)
+        # 모드 선택 라디오 (쓰지 않음 — 세그먼트 탭으로 바뀌었다)
         s.configure('Mode.TRadiobutton', background=BG_CARD,
                     foreground=FG, font=FONT_B)
         s.map('Mode.TRadiobutton',
-              background=[('active', '#F1F3F5')])
+              background=[('active', '#E7EBF3')])
 
     # ── UI ────────────────────────────────────────────────────────────────
+
+    def _segmented(self, parent, var, values, command=None, strong=False):
+        """세그먼트 탭 — 라디오 동그라미 대신 서로 붙은 칸으로 고른다.
+        세 모드·세 검색유형은 동급 화면이라 '설정값'이 아니라 '탭'으로 보여야 한다.
+        (ttk 라디오는 동그라미를 못 없애서 tk.Radiobutton indicatoron=0 을 쓴다)"""
+        box = tk.Frame(parent, bg=BORDER)
+        cells = []
+        for i, v in enumerate(values):
+            b = tk.Radiobutton(
+                box, text=v, variable=var, value=v, command=command,
+                indicatoron=0, selectcolor=BG_CARD, cursor='hand2',
+                font=FONT_B if strong else FONT,
+                bg=HEAD_BG, fg=FG_DIM, activebackground='#E7EBF3',
+                activeforeground=ACCENT, bd=0, highlightthickness=0,
+                padx=0, pady=5 if strong else 3,
+            )
+            b.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 1, 0))
+            box.columnconfigure(i, weight=1, uniform='seg')
+            cells.append(b)
+
+        def paint(*_):
+            for b in cells:
+                on = b.cget('value') == var.get()
+                b.config(bg=BG_CARD if on else HEAD_BG,
+                         fg=ACCENT if on else FG_DIM,
+                         font=FONT_B if (on or strong) else FONT)
+        var.trace_add('write', paint)
+        paint()
+        return box
+
 
     def _build_ui(self):
         pane = tk.PanedWindow(
@@ -262,17 +310,11 @@ class App:
 
     def _build_left(self, parent):
         # 모드 선택 (순위 체크 / 키워드 체크) — 배경색으로 구분
-        row_mode = tk.Frame(parent, bg=BG_CARD,
-                            highlightbackground=ACCENT, highlightthickness=1)
-        row_mode.pack(fill=tk.X, padx=4, pady=(4, 2))
         self.mode_var = tk.StringVar(value='순위 체크')
-        for m in ('순위 체크', '키워드 체크'):
-            ttk.Radiobutton(
-                row_mode, text=m,
-                variable=self.mode_var, value=m,
-                command=self._on_mode_change,
-                style='Mode.TRadiobutton',
-            ).pack(side=tk.LEFT, padx=(10, 16), pady=5)
+        row_mode = self._segmented(
+            parent, self.mode_var, ('순위 체크', '키워드 체크', '이웃확인'),
+            command=self._on_mode_change, strong=True)
+        row_mode.pack(fill=tk.X, padx=4, pady=(4, 2))
 
         self.rank_left = ttk.Frame(parent)
         self.rank_left.pack(fill=tk.BOTH, expand=True)
@@ -281,9 +323,12 @@ class App:
         self.kwchk_left = ttk.Frame(parent)
         self._build_kwchk_left(self.kwchk_left)
 
+        self.nbr_left = ttk.Frame(parent)
+        self._build_nbr_left(self.nbr_left)
+
     def _build_rank_left(self, parent):
         # 비교대상 아이디 입력
-        self.lf_id = ttk.LabelFrame(parent, text='★ 비교대상 아이디 입력')
+        self.lf_id = ttk.LabelFrame(parent, text='비교대상 아이디')
         lf_id = self.lf_id
         lf_id.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
         self._update_saved_label()
@@ -293,14 +338,14 @@ class App:
         self.id_text = tk.Text(
             lf_id, yscrollcommand=ys.set, font=FONT, wrap=tk.NONE, undo=True,
             bg=BG_CARD, fg=ACCENT, relief='flat', insertbackground=FG,
-            selectbackground='#DDE3F0', bd=0, padx=4, pady=2, spacing1=0, spacing3=0,
+            selectbackground='#E0E6F2', bd=0, padx=4, pady=2, spacing1=0, spacing3=0,
             height=8,  # 요청 높이 축소 — 라디오 추가로 하단 짤림 방지
         )
         self.id_text.pack(fill=tk.BOTH, expand=True)
         ys.config(command=self.id_text.yview)
 
         # 검색
-        lf_search = ttk.LabelFrame(parent, text='★ 검색')
+        lf_search = ttk.LabelFrame(parent, text='검색')
         lf_search.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 3))
 
         # 남는 세로 공간은 키워드 입력칸이 채움 (하단 빈 공간 방지)
@@ -327,19 +372,15 @@ class App:
             row_btn, text='검색', command=self._toggle_search,
             bg=ACCENT, fg='white', font=FONT_B,
             relief='solid', bd=1, cursor='hand2',
-            activebackground='#24336B', activeforeground='white',
+            activebackground='#334466', activeforeground='white',
             pady=4,
         )
         self.btn_search.pack(fill=tk.X)
 
-        row_type = ttk.Frame(lf_search)
-        row_type.pack(fill=tk.X, padx=6, pady=(0, 4))
         self.type_var = tk.StringVar(value='블로그')
-        for t in ('블로그', '신뢰도', '인기글'):
-            ttk.Radiobutton(
-                row_type, text=t,
-                variable=self.type_var, value=t,
-            ).pack(side=tk.LEFT, padx=(0, 10))
+        row_type = self._segmented(lf_search, self.type_var,
+                                   ('블로그', '신뢰도', '인기글'))
+        row_type.pack(fill=tk.X, padx=6, pady=(0, 4))
 
         row_cnt = ttk.Frame(lf_search)
         row_cnt.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -352,9 +393,9 @@ class App:
         ).pack(side=tk.LEFT, padx=(8, 0))
         self.btn_save_gist = tk.Button(
             row_cnt, text='아이디&설정 저장', command=self._save_to_gist,
-            bg=BG_CARD, fg=ACCENT, font=('Malgun Gothic', 8, 'bold'),
+            bg=HEAD_BG, fg=ACCENT, font=('Malgun Gothic', 8, 'bold'),
             relief='solid', bd=1, cursor='hand2',
-            activebackground='#F1F3F5', activeforeground=ACCENT,
+            activebackground='#E7EBF3', activeforeground=ACCENT,
             padx=7, pady=2,
         )
         self.btn_save_gist.pack(side=tk.RIGHT, padx=(0, 2))
@@ -366,14 +407,14 @@ class App:
         self.progress.pack(fill=tk.X, padx=6, pady=(0, 6))
 
     def _build_kwchk_left(self, parent):
-        lf_kw = ttk.LabelFrame(parent, text='★ 키워드 입력 (한 줄에 하나)')
+        lf_kw = ttk.LabelFrame(parent, text='키워드 입력 (한 줄에 하나)')
         lf_kw.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
         ys = ttk.Scrollbar(lf_kw)
         ys.pack(side=tk.RIGHT, fill=tk.Y)
         self.kwchk_text = tk.Text(
             lf_kw, yscrollcommand=ys.set, font=FONT, wrap=tk.NONE, undo=True,
             bg=BG_CARD, fg=ACCENT, relief='flat', insertbackground=FG,
-            selectbackground='#DDE3F0', bd=0, padx=4, pady=2,
+            selectbackground='#E0E6F2', bd=0, padx=4, pady=2,
             spacing1=0, spacing3=0,
         )
         self.kwchk_text.pack(fill=tk.BOTH, expand=True)
@@ -406,7 +447,10 @@ class App:
         self.kwchk_right = ttk.Frame(parent)
         self._build_kwchk_right(self.kwchk_right)
 
-        # 로그 (오른쪽 하단, 두 모드 공용)
+        self.nbr_right = ttk.Frame(parent)
+        self._build_nbr_right(self.nbr_right)
+
+        # 로그 (오른쪽 하단, 세 모드 공용)
         lf_log = ttk.LabelFrame(parent, text='로그')
         lf_log.pack(fill=tk.X, padx=(2, 4), pady=(0, 4))
         lf_log.pack_propagate(False)
@@ -527,16 +571,19 @@ class App:
         self._kwchk_links: dict = {}
 
     def _on_mode_change(self):
-        if self.mode_var.get() == '키워드 체크':
-            self.rank_left.pack_forget()
-            self.rank_right.pack_forget()
-            self.kwchk_left.pack(fill=tk.BOTH, expand=True)
-            self.kwchk_right.pack(fill=tk.BOTH, expand=True, before=self.lf_log)
-        else:
-            self.kwchk_left.pack_forget()
-            self.kwchk_right.pack_forget()
-            self.rank_left.pack(fill=tk.BOTH, expand=True)
-            self.rank_right.pack(fill=tk.BOTH, expand=True, before=self.lf_log)
+        mode = self.mode_var.get()
+        panes = {
+            '순위 체크':   (self.rank_left,  self.rank_right),
+            '키워드 체크': (self.kwchk_left, self.kwchk_right),
+            '이웃확인':    (self.nbr_left,   self.nbr_right),
+        }
+        for name, (left, right) in panes.items():
+            if name != mode:
+                left.pack_forget()
+                right.pack_forget()
+        left, right = panes.get(mode, panes['순위 체크'])
+        left.pack(fill=tk.BOTH, expand=True)
+        right.pack(fill=tk.BOTH, expand=True, before=self.lf_log)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -646,9 +693,9 @@ class App:
         # 아이디 입력 라벨프레임 제목 옆에 마지막 Gist 저장 날짜 표기
         try:
             if self._saved_at:
-                self.lf_id.config(text=f'★ 비교대상 아이디 입력  (최종 저장: {self._saved_at})')
+                self.lf_id.config(text=f'비교대상 아이디  ·  최종 저장 {self._saved_at}')
             else:
-                self.lf_id.config(text='★ 비교대상 아이디 입력')
+                self.lf_id.config(text='비교대상 아이디')
         except Exception:
             pass
 
@@ -858,7 +905,7 @@ class App:
         """표 행 태그. Tk 8.6 은 칸 단위 색을 지원하지 않아(열 하나만 칠할 수 없다)
         순위 강조는 그 글의 행 전체를 초록으로 칠해서 나타낸다."""
         t = self.tree
-        t.tag_configure('sep', background=SEP_BG, foreground=POINT, font=FONT_B)
+        t.tag_configure('sep', background=SEP_BG, foreground=ACCENT, font=FONT_B)
         t.tag_configure('odd',      background=BG_CARD, foreground=FG)
         t.tag_configure('even',     background=ROW_ALT, foreground=FG)
         t.tag_configure('hit_odd',  background=BG_CARD, foreground=HIT, font=FONT_B)
@@ -906,7 +953,7 @@ class App:
                     post['title'],
                     post.get('blog_name', ''),
                     display_id,
-                    post.get('date', ''),
+                    _short_date(post.get('date', '')),
                     short_link,
                 ),
                 tags=(self._row_tag(post['rank'], row_i),),
@@ -1073,6 +1120,214 @@ class App:
         )
         self.kwchk_progress['value'] = 100
         self._log('키워드 체크 종료')
+
+    # ── 이웃확인 ──────────────────────────────────────────────────────────
+    # 키워드별로 신뢰도(통합검색) 상위에 노출된 블로그를 모아
+    # 그 블로그의 이웃수·블로그명·닉네임을 보여준다.
+
+    def _build_nbr_left(self, parent):
+        lf_kw = ttk.LabelFrame(parent, text='키워드 입력 (한 줄에 하나)')
+        lf_kw.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 3))
+        ys = ttk.Scrollbar(lf_kw)
+        ys.pack(side=tk.RIGHT, fill=tk.Y)
+        self.nbr_text = tk.Text(
+            lf_kw, yscrollcommand=ys.set, font=FONT, wrap=tk.NONE, undo=True,
+            bg=BG_CARD, fg=ACCENT, relief='flat', insertbackground=FG,
+            selectbackground='#E0E6F2', bd=0, padx=4, pady=2,
+            spacing1=0, spacing3=0,
+        )
+        self.nbr_text.pack(fill=tk.BOTH, expand=True)
+        ys.config(command=self.nbr_text.yview)
+        self.nbr_text.bind('<Control-Return>', lambda _: self._toggle_nbr())
+
+        box = ttk.Frame(parent)
+        box.pack(fill=tk.X, padx=4, pady=(0, 4))
+
+        self.btn_nbr = tk.Button(
+            box, text='조회', command=self._toggle_nbr,
+            bg=ACCENT, fg='white', font=FONT_B,
+            relief='solid', bd=1, cursor='hand2',
+            activebackground='#334466', activeforeground='white', pady=4,
+        )
+        self.btn_nbr.pack(fill=tk.X, pady=(6, 4))
+
+        row = ttk.Frame(box)
+        row.pack(fill=tk.X)
+        ttk.Label(row, text='신뢰도 상위', font=FONT_B).pack(side=tk.LEFT)
+        self.nbr_count_var = tk.IntVar(value=20)
+        ttk.Spinbox(
+            row, from_=10, to=180, increment=10,
+            textvariable=self.nbr_count_var, width=6,
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        ttk.Label(row, text='위까지').pack(side=tk.LEFT)
+
+        self.nbr_progress = ttk.Progressbar(box, mode='determinate', maximum=100)
+        self.nbr_progress.pack(fill=tk.X, pady=(8, 0))
+
+    def _build_nbr_right(self, parent):
+        COLS = ('키워드', '순위', '이웃수', '블로그명', '닉네임', '아이디', '링크')
+        tbl = ttk.Frame(parent)
+        tbl.pack(fill=tk.BOTH, expand=True, padx=(2, 4), pady=(4, 2))
+
+        vs = ttk.Scrollbar(tbl)
+        vs.pack(side=tk.RIGHT, fill=tk.Y)
+        self.nbr_tree = ttk.Treeview(
+            tbl, columns=COLS, show='headings', yscrollcommand=vs.set,
+        )
+        self.nbr_tree.pack(fill=tk.BOTH, expand=True)
+        vs.config(command=self.nbr_tree.yview)
+
+        for col, w, anc, stretch in (
+            ('키워드',   110, tk.W,      False),
+            ('순위',     45,  tk.E,      False),
+            ('이웃수',   70,  tk.E,      False),
+            ('블로그명', 180, tk.W,      True),
+            ('닉네임',   110, tk.W,      False),
+            ('아이디',   95,  tk.W,      False),
+            ('링크',     55,  tk.CENTER, False),
+        ):
+            self.nbr_tree.heading(col, text=col, anchor=tk.CENTER)
+            self.nbr_tree.column(col, width=px(w), anchor=anc,
+                                 minwidth=px(40), stretch=stretch)
+
+        self.nbr_tree.tag_configure('sep', background=SEP_BG,
+                                    foreground=ACCENT, font=FONT_B)
+        self.nbr_tree.tag_configure('odd',  background=BG_CARD, foreground=FG)
+        self.nbr_tree.tag_configure('even', background=ROW_ALT, foreground=FG)
+        # 이웃 많은 블로그 — 순위 강조와 같은 초록. Tk 8.6 은 칸 단위 색을
+        # 지원하지 않아(열 하나만 못 칠한다) 그 줄 전체를 칠한다.
+        self.nbr_tree.tag_configure('big_odd',  background=BG_CARD, foreground=HIT, font=FONT_B)
+        self.nbr_tree.tag_configure('big_even', background=ROW_ALT, foreground=HIT, font=FONT_B)
+
+        self.nbr_tree.bind('<Double-1>', self._on_nbr_double)
+        ctx = tk.Menu(self.root, tearoff=0, font=FONT)
+        ctx.add_command(label='링크 열기', command=self._open_nbr_selected)
+        ctx.add_command(label='아이디 복사', command=self._copy_nbr_id)
+        self.nbr_tree.bind('<Button-3>', lambda e: self._show_ctx(e, ctx))
+
+    def _nbr_link(self, item) -> str:
+        return self._nbr_links.get(item, '')
+
+    def _on_nbr_double(self, event):
+        item = self.nbr_tree.identify_row(event.y)
+        if item and self._nbr_link(item):
+            webbrowser.open(self._nbr_link(item))
+
+    def _open_nbr_selected(self):
+        for item in self.nbr_tree.selection():
+            if self._nbr_link(item):
+                webbrowser.open(self._nbr_link(item))
+
+    def _copy_nbr_id(self):
+        ids = [self.nbr_tree.item(i)['values'][5] for i in self.nbr_tree.selection()]
+        ids = [str(i) for i in ids if i]
+        if ids:
+            self.root.clipboard_clear()
+            self.root.clipboard_append('\n'.join(ids))
+            self._log(f'클립보드에 복사됨: {", ".join(ids)}')
+
+    def _toggle_nbr(self):
+        if self._is_running:
+            self._stop_flag.set()
+            self.btn_nbr.config(text='중지 중...', state=tk.DISABLED)
+            return 'break'
+        keywords = [
+            ln.strip()
+            for ln in self.nbr_text.get('1.0', tk.END).splitlines()
+            if ln.strip()
+        ]
+        if not keywords:
+            messagebox.showwarning('알림', '키워드를 입력하세요.')
+            return 'break'
+
+        self._is_running = True
+        self._stop_flag.clear()
+        self._nbr_links.clear()
+        for item in self.nbr_tree.get_children():
+            self.nbr_tree.delete(item)
+        self.nbr_progress['value'] = 0
+        self.btn_nbr.config(text='중지', bg='#EF4444', activebackground='#DC2626')
+        self._log('이웃확인 시작')
+        threading.Thread(
+            target=self._nbr_worker,
+            args=(keywords, self.nbr_count_var.get()),
+            daemon=True,
+        ).start()
+        return 'break'
+
+    def _nbr_worker(self, keywords: list, count: int):
+        n = len(keywords)
+        for ki, keyword in enumerate(keywords):
+            if self._stop_flag.is_set():
+                break
+            self._log(f'신뢰도 상위 조회 중... ({ki+1}/{n}) "{keyword}"')
+            try:
+                posts = search_naver(
+                    keyword, '신뢰도', count, stop_flag=self._stop_flag,
+                )
+            except Exception as e:
+                self._log(f'오류({keyword}): {e}')
+                continue
+
+            # 같은 블로그가 한 키워드에 여러 번 나오면 가장 높은 순위만 남긴다
+            seen, rows = set(), []
+            for post in posts:
+                bid = post['id'].lower()
+                if bid in seen:
+                    continue
+                seen.add(bid)
+                rows.append(post)
+
+            if rows and not self._stop_flag.is_set():
+                self._log(f'이웃수 가져오는 중... "{keyword}" ({len(rows)}개 블로그)')
+            for i, post in enumerate(rows):
+                if self._stop_flag.is_set():
+                    break
+                prof = fetch_blog_profile(post['id'])
+                post['nickname'] = prof['nickname']
+                post['buddy'] = prof['buddy']
+                post['blog_name'] = prof['blog_name']
+                pct = ((ki + (i + 1) / max(1, len(rows))) / n) * 100
+                self.root.after(0, lambda v=pct: self.nbr_progress.config(value=v))
+
+            self.root.after(0, self._nbr_append, keyword, rows)
+
+        self.root.after(0, self._nbr_done)
+
+    def _nbr_append(self, keyword: str, rows: list):
+        self.nbr_tree.insert(
+            '', tk.END, values=(f'[{keyword}]', '', '', '', '', '', ''),
+            tags=('sep',),
+        )
+        for i, post in enumerate(rows):
+            buddy = post.get('buddy', -1)
+            big = isinstance(buddy, int) and buddy >= NBR_BIG      # 이웃 많은 블로그
+            stripe = 'even' if i % 2 else 'odd'
+            iid = self.nbr_tree.insert(
+                '', tk.END,
+                values=(
+                    keyword,
+                    post['rank'],
+                    f'{buddy:,}' if isinstance(buddy, int) and buddy >= 0 else '-',
+                    post.get('blog_name', ''),
+                    post.get('nickname', ''),
+                    post['id'],
+                    '열기',
+                ),
+                tags=(('big_' + stripe) if big else stripe,),
+            )
+            self._nbr_links[iid] = f'https://blog.naver.com/{post["id"]}'
+        children = self.nbr_tree.get_children()
+        if children:
+            self.nbr_tree.see(children[-1])
+
+    def _nbr_done(self):
+        self._is_running = False
+        self.btn_nbr.config(
+            text='조회', bg=ACCENT, activebackground='#334466', state=tk.NORMAL,
+        )
+        self.nbr_progress['value'] = 100
+        self._log('이웃확인 종료')
 
     # ── Auto-update ───────────────────────────────────────────────────────
 

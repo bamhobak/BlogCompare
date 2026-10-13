@@ -7,6 +7,7 @@ import urllib.parse
 
 import requests
 from bs4 import BeautifulSoup
+from html import unescape as _unescape
 
 # 네이버 검색은 TLS 지문(JA3)으로 봇을 거른다.
 # 일반 requests(OpenSSL) 핸드셰이크는 403 '검색 서비스 이용이 제한되었습니다' 페이지를 받는다.
@@ -156,6 +157,57 @@ def fetch_blog_name(blog_id: str) -> str:
         pass
     _blog_name_cache[key] = name
     return name
+
+
+# ── 블로그 프로필 (닉네임 / 이웃수 / 블로그명) ────────────────────────────────
+# 모바일 블로그 홈 한 번으로 셋 다 얻는다(RSS 추가 호출 불필요).
+# class 이름에 해시가 붙어 수시로 바뀌므로(buddy__UnXlf 등) class 로 찾지 않는다.
+_NICK_PAT  = re.compile(r'data-click-area="ebc\.nick"[^>]*>([^<]+)<')
+_BUDDY_PAT = re.compile(r'([\d,]+)\s*명의\s*이웃')
+_TITLE_PAT = re.compile(r'<title>([^<]*)</title>')
+_profile_cache: dict = {}
+
+
+def fetch_blog_profile(blog_id: str) -> dict:
+    """{'nickname', 'buddy', 'blog_name'} — 못 읽으면 빈 값/-1.
+
+    buddy 는 숫자(int), 못 읽으면 -1. 같은 블로그는 한 번만 받아 캐시한다.
+    """
+    key = blog_id.lower()
+    if key in _profile_cache:
+        return _profile_cache[key]
+
+    out = {'nickname': '', 'buddy': -1, 'blog_name': ''}
+    try:
+        resp = _SESSION.get(
+            f'https://m.blog.naver.com/{blog_id}', timeout=12, allow_redirects=True,
+        )
+        t = resp.text
+        m = _NICK_PAT.search(t)
+        if m:
+            out['nickname'] = _unescape(m.group(1).strip())
+        m = _BUDDY_PAT.search(t)
+        if m:
+            try:
+                out['buddy'] = int(m.group(1).replace(',', ''))
+            except ValueError:
+                pass
+        m = _TITLE_PAT.search(t)
+        if m:
+            # "블로그명 : 네이버 블로그" — 블로그명 자체에 ' : ' 가 들어가는 경우가
+            # 있어 꼬리만 떼어낸다.
+            name = _unescape(m.group(1).strip())
+            name = re.sub(r'\s*:\s*네이버\s*블로그\s*$', '', name)
+            out['blog_name'] = name.strip()
+    except Exception:
+        pass
+
+    # 모바일 홈이 비어 있으면 블로그명만이라도 RSS 로 보완
+    if not out['blog_name']:
+        out['blog_name'] = fetch_blog_name(blog_id)
+
+    _profile_cache[key] = out
+    return out
 
 
 def fetch_post_date(blog_id: str, log_no: str) -> str:
