@@ -20,7 +20,7 @@ from crawler import (
     fetch_blog_profile,
 )
 
-VERSION = 'v1.1.12'
+VERSION = 'v1.1.13'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -115,6 +115,8 @@ SEP_BG  = '#E2E8EF'   # 키워드 구분줄 바탕
 HEAD_BG = '#F2F5F8'   # 표 머리띠
 LINE_2  = '#E4E9EF'   # 더 옅은 구분선
 POINT   = ACCENT      # (옛 주황 자리 — 남은 참조가 강조색을 따라가게)
+SELECT_BG = '#C62828'  # 고른 줄 — 붉은 계열로 확실히 튀게
+SELECT_FG = '#FFFFFF'
 FONT    = ('Malgun Gothic', 9)
 FONT_B  = ('Malgun Gothic', 9, 'bold')
 FONT_SM = ('Malgun Gothic', 9)           # 로그 — 결과표보다 크면 위계가 뒤집힌다
@@ -247,8 +249,12 @@ class App:
                     foreground=ACCENT, relief='flat', borderwidth=1,
                     bordercolor=BORDER, padding=(0, 5))
         s.map('Treeview.Heading', background=[('active', '#E7EBF3')])
-        s.map('Treeview', background=[('selected', '#E0E6F2')],
-              foreground=[('selected', ACCENT)])
+        # 고른 줄은 붉은 계열로 튀게.
+        # map 은 먼저 맞는 항목이 이긴다 — clam 기본값에 ('selected', '#4a6984') 가
+        # 이미 들어 있어서 뒤에 덧붙이면 안 먹는다. 통째로 바꿔야 한다.
+        s.map('Treeview',
+              background=[('disabled', '#DCDAD5'), ('selected', SELECT_BG)],
+              foreground=[('disabled', '#999999'), ('selected', SELECT_FG)])
 
         # 진행바는 조회 중에만 뜻이 있다 — 늘 두껍게 있을 필요가 없어 얇게
         s.configure('TProgressbar', troughcolor=LINE_2, bordercolor=BORDER,
