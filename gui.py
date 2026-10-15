@@ -16,11 +16,11 @@ import requests
 from crawler import (
     search_naver, resolve_blog_id, fetch_blog_name, fetch_post_date,
     fetch_first_page_titles, title_matches_keyword, first_page_search_url,
-    fetch_popular_section, main_search_url, fetch_monthly_volumes,
+    fetch_monthly_volumes,
     fetch_blog_profile,
 )
 
-VERSION = 'v1.1.09'
+VERSION = 'v1.1.12'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -208,7 +208,7 @@ class App:
         self._res_total = 0
         self._res_hit_rank = None         # 초록 강조 기준 순위
         self._nbr_links: dict = {}        # 이웃확인 표 행 → 블로그 주소
-        self._counts = {'블로그': 100, '신뢰도': 100, '인기글': 100}
+        self._counts = {'블로그': 100, '신뢰도': 100}
         self._update_info: dict = {}
         self._saved_at: str = ''
 
@@ -378,8 +378,10 @@ class App:
         self.btn_search.pack(fill=tk.X)
 
         self.type_var = tk.StringVar(value='블로그')
+        # 2026-10-15 네이버가 통합검색에서 블로그 인기글 블록을 걷어냈다
+        # ('인기글' 이라는 말 자체가 페이지에 안 나온다) — 선택지에서 뺌
         row_type = self._segmented(lf_search, self.type_var,
-                                   ('블로그', '신뢰도', '인기글'))
+                                   ('블로그', '신뢰도'))
         row_type.pack(fill=tk.X, padx=6, pady=(0, 4))
 
         row_cnt = ttk.Frame(lf_search)
@@ -509,7 +511,6 @@ class App:
     SUM_COL_KW  = 19
     SUM_COL_VOL = 12
     SUM_COL_CNT = 12
-    SUM_COL_POP = 18
     SUM_COL_LNK = 11
 
     def _build_kwchk_right(self, parent):
@@ -522,7 +523,6 @@ class App:
             ('키워드',     self.SUM_COL_KW),
             ('블로그탭',   self.SUM_COL_CNT),
             ('카페탭',     self.SUM_COL_CNT),
-            ('인기글',     self.SUM_COL_POP),
             ('조회수',     self.SUM_COL_VOL),
             ('블 링크',    self.SUM_COL_LNK),
             ('카 링크',    self.SUM_COL_LNK),
@@ -620,6 +620,9 @@ class App:
 
     def _on_type_change(self, *_):
         t = self.type_var.get()
+        if t not in self._counts:        # 옛 설정에 남은 '인기글' 등
+            self.type_var.set('블로그')
+            return
         self.count_var.set(self._counts.get(t, 100))
         self.cnt_label_var.set(f'{t} 조회수')
 
@@ -1052,21 +1055,11 @@ class App:
                 counts[tab] = (valid, len(posts))
                 self.root.after(0, self._kwchk_add_rows, kw, tab, rows)
                 step += 1
-                self.root.after(0, self._kwchk_progress_set, step * 100 / (n * 3))
-                time.sleep(random.uniform(0.6, 1.4))
-            # 통합검색 인기글 섹션 유무 체크
-            pop = ''
-            if not self._stop_flag.is_set():
-                try:
-                    pop = fetch_popular_section(kw)
-                except Exception as e:
-                    self._log(f'오류({kw}/인기글): {e}')
-                step += 1
-                self.root.after(0, self._kwchk_progress_set, step * 100 / (n * 3))
+                self.root.after(0, self._kwchk_progress_set, step * 100 / (n * 2))
                 time.sleep(random.uniform(0.6, 1.4))
             if counts:
                 self.root.after(0, self._kwchk_add_summary,
-                                kw, counts, pop, volumes.get(kw))
+                                kw, counts, volumes.get(kw))
         self.root.after(0, self._kwchk_done)
 
     def _kwchk_progress_set(self, pct):
@@ -1081,7 +1074,7 @@ class App:
             )
             self._kwchk_links[iid] = link
 
-    def _kwchk_add_summary(self, kw, counts, pop='', volume=None):
+    def _kwchk_add_summary(self, kw, counts, volume=None):
         fmt = lambda v: f'{v[0]} / {v[1]}' if v else '-'
         row = tk.Frame(self.kwchk_sum_rows, bg=BG_CARD)
         row.pack(fill=tk.X)
@@ -1090,18 +1083,6 @@ class App:
         for tab in ('블로그', '카페'):
             tk.Label(row, text=fmt(counts.get(tab)), width=self.SUM_COL_CNT,
                      font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
-        # 인기글 섹션: 있으면 주제명(초록), 없으면 '신뢰도'(주황) — 둘 다 통합검색 링크
-        if pop:
-            # '맛집 인기글' → '맛집', 주제 없이 '인기글'만이면 그대로 '인기글'
-            disp, color = pop[:-len('인기글')].strip() or '인기글', '#1E8259'
-        else:
-            disp, color = '신뢰도', '#D97706'
-        pop_lbl = tk.Label(row, text=disp, width=self.SUM_COL_POP,
-                           font=FONT_U, bg=BG_CARD, fg=color,
-                           cursor='hand2', pady=4)
-        pop_lbl.bind('<Button-1>',
-                     lambda _e, u=main_search_url(kw): webbrowser.open(u))
-        pop_lbl.pack(side=tk.LEFT)
         vol_txt = f'{volume:,}' if isinstance(volume, int) else '-'
         tk.Label(row, text=vol_txt, width=self.SUM_COL_VOL,
                  font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)

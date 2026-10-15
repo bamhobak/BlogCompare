@@ -101,17 +101,22 @@ _session_ready = False
 _session_lock  = threading.Lock()
 
 PER_PAGE      = 30   # 블로그: 30개씩
-PER_PAGE_INGI = 10   # 인기글: 10개씩
 PER_PAGE_UR   = 20   # 신뢰도: page당 20개, page=2~10 (최대 180위)
 
 BLOG_PAT     = re.compile(r'blog\.naver\.com/([a-zA-Z0-9_.-]+)/(\d+)')
+# 통합검색(신뢰도) 결과 한 건을 감싸는 상자들 — 종류마다 이름이 다르다 (2026-10-15 개편)
+UR_ITEM_CLASSES = (
+    'fds-ugc-ur-desk',                    # 블로그·카페
+    'fds-web-doc-root',                   # 웹사이트
+    'fds-kin-ur-desk',                    # 지식인
+    'fds-video-item-2line-profile-desk',  # 동영상
+)
 _BLOG_ID_PAT = re.compile(r'blog\.naver\.com/([a-zA-Z0-9_.-]+)(?:/|$)')
 _RSS_ID_PAT  = re.compile(r'rss\.blog\.naver\.com/([a-zA-Z0-9_.-]+)')
 _CAFE_PAT    = re.compile(r'cafe\.naver\.com')
 
 _resolve_cache:      dict = {}
 _blog_name_cache:    dict = {}
-_ingi_api_url_cache: dict = {}  # keyword -> lb_api 기본 URL (start 파라미터 제외)
 
 
 def resolve_blog_id(login_id: str) -> str:
@@ -225,35 +230,9 @@ def fetch_post_date(blog_id: str, log_no: str) -> str:
     return ''
 
 
-def _fetch_ingi_first_page(keyword: str) -> str:
-    """
-    인기글 1페이지: 메인 네이버 검색 페이지 HTML을 반환.
-    브라우저와 동일한 SSR 결과를 포함하며, lb_api URL도 캐시한다.
-    """
-    resp = _get(
-        'https://search.naver.com/search.naver',
-        params={'ssc': 'tab.nx.all', 'where': 'nexearch', 'sm': 'tab_jum', 'query': keyword},
-        timeout=15,
-    )
-    _check_blocked(resp)
-    # lb_api URL 추출 후 캐시 (이후 페이지 호출에 사용)
-    if keyword not in _ingi_api_url_cache:
-        m = re.search(
-            r'lb_api=(https%3A%2F%2Fs\.search\.naver\.com[^"&\s<>#]+)',
-            resp.text,
-        )
-        if m:
-            url = urllib.parse.unquote(m.group(1)).replace('&amp;', '&')
-            url = re.sub(r'[&?]start=\d+', '', url)
-            _ingi_api_url_cache[keyword] = url
-        else:
-            _ingi_api_url_cache[keyword] = ''
-    return resp.text
-
-
 def _init_session():
-    """새 세션 예열. 인기글(s.search API)은 search.naver.com 방문 쿠키가 없으면
-    첫 요청부터 403 이라 이 과정이 필요하다. 여기서 쓴 검색 1회도 세션 한도(100회)에
+    """새 세션 예열. search.naver.com 방문 쿠키가 없으면 첫 요청부터 403 이라
+    이 과정이 필요하다. 여기서 쓴 검색 1회도 세션 한도(100회)에
     포함되므로 카운트에 반영한다."""
     global _session_ready, _req_count
     with _session_lock:
@@ -271,43 +250,8 @@ def _init_session():
                 pass
 
 
-def _unwrap_search_html(text: str) -> str:
-    """인기글 API JSON 응답에서 실제 검색결과 HTML 추출. 실패 시 원문 반환."""
-    try:
-        data = _json.loads(text)
-        return data['dom']['collection'][0]['html']
-    except Exception:
-        return text
-
-
 def _fetch(keyword: str, search_type: str, start: int) -> str:
-    if search_type == '인기글':
-        if start == 1:
-            # 첫 페이지: 메인 검색 페이지 HTML 직접 반환 (브라우저 동일 SSR 결과)
-            return _fetch_ingi_first_page(keyword)
-        # 이후 페이지: 메인 페이지에서 캐시된 lb_api URL 사용
-        base_url = _ingi_api_url_cache.get(keyword, '')
-        if not base_url:
-            # 캐시 미스 시 main page 재호출로 lb_api URL 확보
-            _fetch_ingi_first_page(keyword)
-            base_url = _ingi_api_url_cache.get(keyword, '')
-        if base_url:
-            sep = '&' if '?' in base_url else '?'
-            resp = _get(base_url + sep + f'start={start}', timeout=15)
-        else:
-            # lb_api 추출 실패 시 기존 방식 fallback
-            resp = _get(
-                'https://s.search.naver.com/p/review/50/search.naver',
-                params={
-                    'query':    keyword,
-                    'ssc':      'tab.itb.all',
-                    'sm':       'tab_hty.brg',
-                    'start':    start,
-                    'api_type': 5,
-                },
-                timeout=15,
-            )
-    elif search_type == '신뢰도':
+    if search_type == '신뢰도':
         # page 파라미터는 효과 없음 — start만 결과를 제어
         # start=1 → 1위~20위, start=21 → 21위~40위, ..., start=161 → 161위~180위
         resp = _get(
@@ -340,90 +284,47 @@ def _parse(html: str, start_rank: int, search_type: str = '') -> list:
     """
     Extract blog post results from Naver search HTML.
 
-    인기글: fds-ugc-single-intention-item-list 컨테이너 기반 파싱.
-            카페 결과는 순위 슬롯을 차지하지만 결과 목록에는 포함 안 됨.
-            광고는 순위 슬롯에서 제외.
-    블로그/신뢰도: sds-comps-text-type-headline1 span 기반 파싱.
+    신뢰도(통합검색): 결과 상자(fds-*)를 문서 순서대로 세어 순위를 매긴다.
+            블로그가 아닌 상자(웹사이트·카페·지식인·동영상)는 순위 자리만 차지.
+    블로그(블로그탭): sds-comps-text-type-headline1 span 기반 파싱.
     """
     posts = []
     seen  = set()
     soup  = BeautifulSoup(html, 'lxml')
 
-    if search_type == '인기글':
-        rank = start_rank
-        container = soup.find(
-            'div',
-            class_=lambda c: c and 'fds-ugc-single-intention-item-list' in c,
-        )
-        if container:
-            for child in container.children:
-                if not hasattr(child, 'find'):
-                    continue
-                # 광고는 순위에서 제외
-                if child.find(string=re.compile(r'^\s*광고\s*$')):
-                    continue
-                # headline1 타이틀이 없으면 서브링크 → 순위 슬롯 아님
-                if not child.find(
-                    'span',
-                    class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
-                ):
-                    continue
-                # headline1을 포함하는 블로그 링크 탐색
-                blog_link_h1 = None
-                for a in child.find_all('a', href=BLOG_PAT):
-                    if a.find(
-                        'span',
-                        class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
-                    ):
-                        blog_link_h1 = a
-                        break
-                if blog_link_h1:
-                    m = BLOG_PAT.search(blog_link_h1.get('href', ''))
-                    if m:
-                        key = (m.group(1).lower(), m.group(2))
-                        if key not in seen:
-                            seen.add(key)
-                            title_span = blog_link_h1.find(
-                                'span',
-                                class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
-                            )
-                            title = re.sub(r' +', ' ', title_span.get_text(separator=' ')).strip() if title_span else ''
-                            blog_id = m.group(1)
-                            posts.append({
-                                'rank':      rank,
-                                'title':     title,
-                                'blog_name': '',
-                                'id':        blog_id,
-                                'date':      '',
-                                'link':      f'https://blog.naver.com/{blog_id}/{m.group(2)}',
-                            })
-                # 블로그/카페/기타 모든 headline1 결과는 순위 슬롯 차지
-                rank += 1
-        return posts
-
     if search_type == '신뢰도':
-        # tab.ur.all은 컨테이너 중첩이 깊어 직접 자식 순회 불가.
-        # 페이지 전체 headline1 링크를 순서대로 순위 슬롯으로 카운트.
-        # 블로그 → 결과 추가, 카페/기타 → 순위 슬롯만 차지.
+        # 2026-10-15 통합검색 개편 — 결과 한 건이 종류별 상자 하나로 나온다.
+        #   웹사이트 fds-web-doc-root · 블로그/카페 fds-ugc-ur-desk
+        #   지식인 fds-kin-ur-desk  · 동영상 fds-video-item-2line-profile-desk
+        # 상자를 문서 순서대로 세면 한 쪽 20개와 정확히 맞는다(실측).
+        # 옛 방식(headline1 링크 세기)은 개편 뒤 headline1 이 웹사이트 제목에만
+        # 쓰여서 블로그가 하나도 안 잡혔다.
         rank = start_rank
-        seen_hrefs: set = set()
-        for link in soup.find_all('a'):
-            href = link.get('href', '')
-            if not href or href in seen_hrefs:
+        boxes, taken = [], []
+        for nd in soup.find_all(
+            lambda t: t.has_attr('class') and any(k in t['class'] for k in UR_ITEM_CLASSES)
+        ):
+            if any(nd in t.descendants for t in taken):   # 겹쳐 있는 바깥 껍데기는 한 번만
                 continue
-            title_span = link.find(
-                'span',
-                class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
-            )
-            if title_span is None:
-                continue
-            seen_hrefs.add(href)
-            m = BLOG_PAT.search(href)
-            if m:
+            taken.append(nd)
+            boxes.append(nd)
+
+        for box in boxes:
+            for a in box.find_all('a', href=True):
+                m = BLOG_PAT.search(a['href'])
+                if not m:
+                    continue
+                title_span = a.find(
+                    'span',
+                    class_=lambda c: c and 'sds-comps-text-ellipsis-1' in c,
+                )
+                title = (re.sub(r' +', ' ', title_span.get_text(separator=' ')).strip()
+                         if title_span else '')
+                if not title:          # 제목 없는 링크(블로그 홈·프로필)는 글이 아니다
+                    continue
                 key = (m.group(1).lower(), m.group(2))
                 if key not in seen:
                     seen.add(key)
-                    title = re.sub(r' +', ' ', title_span.get_text(separator=' ')).strip()
                     blog_id = m.group(1)
                     posts.append({
                         'rank':      rank,
@@ -433,7 +334,8 @@ def _parse(html: str, start_rank: int, search_type: str = '') -> list:
                         'date':      '',
                         'link':      f'https://blog.naver.com/{blog_id}/{m.group(2)}',
                     })
-            rank += 1  # 블로그/카페/기타 모든 headline1 링크가 순위 슬롯
+                break
+            rank += 1   # 블로그든 카페·웹사이트·지식인이든 상자 하나가 순위 하나
         return posts
 
     # 블로그: headline1 기반
@@ -492,12 +394,7 @@ def search_naver(
     all_posts: list = []
     seen_keys: set  = set()
     start = 1
-    if search_type == '블로그':
-        per_page = PER_PAGE
-    elif search_type == '신뢰도':
-        per_page = PER_PAGE_UR
-    else:
-        per_page = PER_PAGE_INGI
+    per_page = PER_PAGE_UR if search_type == '신뢰도' else PER_PAGE
 
     # 신뢰도: page=2~10, 20개씩 (최대 180위)
     if search_type == '신뢰도':
@@ -506,16 +403,15 @@ def search_naver(
     while True:
         if stop_flag and stop_flag.is_set():
             break
-        # 인기글/신뢰도: 다음 페이지 시작이 조회 범위를 초과하면 종료
-        if search_type in ('인기글', '신뢰도') and start > count:
+        # 신뢰도: 다음 페이지 시작이 조회 범위를 초과하면 종료
+        if search_type == '신뢰도' and start > count:
             break
         # 블로그: 충분히 수집됐으면 종료
         if search_type == '블로그' and len(all_posts) >= count:
             break
 
         try:
-            raw = _fetch(keyword, search_type, start)
-            html = _unwrap_search_html(raw) if search_type == '인기글' else raw
+            html = _fetch(keyword, search_type, start)
         except NaverBlocked:
             raise          # 차단은 조용히 0건으로 넘기지 말고 화면에 알린다
         except Exception:
@@ -531,7 +427,7 @@ def search_naver(
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-            if search_type in ('인기글', '신뢰도'):
+            if search_type == '신뢰도':
                 # 조회수(count) 이내 순위만 포함
                 if post['rank'] > count:
                     continue
@@ -550,12 +446,7 @@ def search_naver(
         if search_type != '신뢰도' and new_count == 0:
             break
 
-        if search_type == '인기글' and page_posts:
-            # 메인 페이지(1페이지)는 ~7개, lb_api는 ~30개로 페이지 크기가 달라
-            # 실제 받은 마지막 순위 다음부터 시작해 순위 공백 없이 연속 조회
-            start = max(p['rank'] for p in page_posts) + 1
-        else:
-            start += per_page
+        start += per_page
         time.sleep(random.uniform(0.6, 1.4))
 
     return all_posts
@@ -670,26 +561,6 @@ def main_search_url(keyword: str) -> str:
                 'where': 'nexearch', 'sm': 'top_hty',
                 'fbm': '0', 'ie': 'utf8', 'query': keyword,
             }))
-
-
-def fetch_popular_section(keyword: str) -> str:
-    """
-    메인 통합검색 페이지에 '~ 인기글' 섹션이 있으면 섹션 제목 반환, 없으면 ''.
-    제목은 키워드 주제에 따라 다름: 'IT·컴퓨터 인기글', '맛집 인기글', '인기글' 등.
-    """
-    _init_session()
-    resp = _get('https://search.naver.com/search.naver',
-                params={'where': 'nexearch', 'sm': 'top_hty',
-                        'fbm': '0', 'ie': 'utf8', 'query': keyword},
-                timeout=15)
-    _check_blocked(resp)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, 'lxml')
-    for h2 in soup.find_all('h2'):
-        txt = re.sub(r'\s+', ' ', h2.get_text(' ')).strip()
-        if txt.endswith('인기글'):
-            return txt
-    return ''
 
 
 def fetch_first_page_titles(keyword: str, tab: str) -> list:
