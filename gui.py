@@ -19,9 +19,10 @@ from crawler import (
     fetch_monthly_volumes,
     fetch_blog_profile,
     AdultBlockedError, load_adult_cookie, set_adult_cookie, has_adult_cookie,
+    set_adult_servers,
 )
 
-VERSION = 'v1.1.14'
+VERSION = 'v1.1.15'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -915,12 +916,16 @@ class App:
         self.root.after(0, self._finish_results, len(all_matched))
 
     def _load_adult_cookie(self):
-        """성인 키워드용 로그인 쿠키(.claude_api.env 의 NAVER_NID_AUT/SES).
-        서버 수집기 PC 에만 있다 — 없으면 성인 키워드는 '성인'으로만 알린다."""
+        """성인 키워드 준비.
+        쿠키는 수집기 서버 PC 에만 둔다 — 이 PC 는 그 서버에 '대신 받아 줘' 라고 부탁한다.
+        (이 PC 에 쿠키를 넣어 둔 경우에는 그걸 먼저 쓴다.)"""
         try:
+            cfg = _load_config()
+            if cfg.get('adult_servers'):
+                set_adult_servers(cfg['adult_servers'])
             set_adult_cookie(load_adult_cookie(BASE_DIR))
             if has_adult_cookie():
-                self._log('성인 키워드: 로그인 쿠키 사용')
+                self._log('성인 키워드: 이 PC 로그인 쿠키 사용')
         except Exception:
             pass
 

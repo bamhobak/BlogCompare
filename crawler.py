@@ -74,6 +74,43 @@ def _adult_blocked(html: str, search_type: str) -> bool:
     return _ADULT_MARK in html and not _parse(html, 1, search_type)
 
 
+# 수집기 서버(성인 쿠키가 있는 PC)에 '이 주소 좀 대신 받아 줘' 하고 부탁하는 길.
+# 밖에서는 이미 열린 클로드 서버(8787)의 /ad/ 전달 길로만 닿는다.
+ADULT_SERVERS = ['121.179.0.1:8787/ad', '127.0.0.1:8792']
+_adult_server_ok = None      # 한 번 통한 주소를 기억 (매번 다 두드리지 않게)
+
+
+def set_adult_servers(addrs):
+    """config.json 의 adult_servers 로 주소를 바꿀 수 있게."""
+    global ADULT_SERVERS, _adult_server_ok
+    if addrs:
+        ADULT_SERVERS = list(addrs)
+        _adult_server_ok = None
+
+
+def _fetch_via_server(url: str) -> str:
+    """성인 쿠키를 가진 수집기 서버가 대신 받아 준 화면을 가져온다.
+    순위를 세는 일은 여기(부탁한 쪽)서 그대로 한다 — 규칙이 두 군데로 갈라지지 않게.
+    못 닿으면 '' 를 돌려준다(그러면 호출부가 '성인 키워드'로 알린다)."""
+    global _adult_server_ok
+    import json as _j
+    import urllib.parse as _up
+    order = ([_adult_server_ok] if _adult_server_ok else []) +             [a for a in ADULT_SERVERS if a != _adult_server_ok]
+    for addr in order:
+        try:
+            ask = f'http://{addr}/get?url=' + _up.quote(url, safe='')
+            r = requests.get(ask, timeout=60)
+            if r.status_code != 200:
+                continue
+            d = _j.loads(r.text)
+            if d.get('ok') and d.get('html'):
+                _adult_server_ok = addr
+                return d['html']
+        except Exception:
+            continue
+    return ''
+
+
 def load_adult_cookie(base_dir) -> dict:
     """카테고리 수집과 같은 파일(.claude_api.env)의 NAVER_NID_AUT/SES.
     앱 폴더 → 그 위 폴더 순으로 찾는다. 서버 수집기 PC 에만 있다."""
@@ -330,12 +367,18 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
             _check_blocked(resp)
             resp.raise_for_status()
         if _adult_blocked(resp.text, search_type):
-            if _ADULT_SESSION is None:
-                why = '로그인 쿠키 없음'
-            elif 'nidlogin.logout' in resp.text or '로그아웃' in resp.text:
+            # 이 PC 엔 성인 쿠키를 두지 않는다 — 쿠키를 가진 수집기 서버에 대신 부탁한다
+            full = url + '?' + urllib.parse.urlencode(params)
+            html = _fetch_via_server(full)
+            if html and not _adult_blocked(html, search_type):
+                return html
+            if _ADULT_SESSION is not None and (
+                    'nidlogin.logout' in resp.text or '로그아웃' in resp.text):
                 why = '로그인은 됐지만 성인인증이 안 된 계정'
+            elif html:
+                why = '수집기 서버도 못 받음(서버 쪽 로그인 확인 필요)'
             else:
-                why = '로그인 쿠키 만료 — 새 NID_AUT/NID_SES 를 넣어 주세요'
+                why = '수집기 서버에 닿지 않음'
             raise AdultBlockedError(f'성인 키워드 — {why}')
     return resp.text
 
