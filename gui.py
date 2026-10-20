@@ -18,9 +18,10 @@ from crawler import (
     fetch_first_page_titles, title_matches_keyword, first_page_search_url,
     fetch_monthly_volumes,
     fetch_blog_profile,
+    AdultBlockedError, load_adult_cookie, set_adult_cookie, has_adult_cookie,
 )
 
-VERSION = 'v1.1.13'
+VERSION = 'v1.1.14'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -813,6 +814,7 @@ class App:
         self._is_running = True
         self._stop_flag.clear()
         self._post_links.clear()
+        self._load_adult_cookie()
 
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -864,6 +866,11 @@ class App:
                     stop_flag=self._stop_flag,
                     progress_cb=prog,
                 )
+            except AdultBlockedError as e:
+                # 로그인 쿠키 없이는 결과가 안 나온다 — '조회 0건'으로 넘기면 안 된다
+                self._log(f'{e}\n"{keyword}" — 순위를 알 수 없음')
+                self.root.after(0, self._mark_adult, keyword, str(e))
+                continue
             except Exception as e:
                 self._log(f'오류: {e}')
                 continue
@@ -907,6 +914,26 @@ class App:
 
         self.root.after(0, self._finish_results, len(all_matched))
 
+    def _load_adult_cookie(self):
+        """성인 키워드용 로그인 쿠키(.claude_api.env 의 NAVER_NID_AUT/SES).
+        서버 수집기 PC 에만 있다 — 없으면 성인 키워드는 '성인'으로만 알린다."""
+        try:
+            set_adult_cookie(load_adult_cookie(BASE_DIR))
+            if has_adult_cookie():
+                self._log('성인 키워드: 로그인 쿠키 사용')
+        except Exception:
+            pass
+
+    def _mark_adult(self, keyword: str, why: str, nbr: bool = False):
+        """성인 키워드를 표에도 남긴다 — 로그는 흘러가서 놓치기 쉽다."""
+        tree = self.nbr_tree if nbr else self.tree
+        cols = len(tree['columns'])
+        vals = [f'[{keyword}]', '', why] + [''] * cols
+        tree.insert('', tk.END, values=tuple(vals[:cols]), tags=('adult',))
+        kids = tree.get_children()
+        if kids:
+            tree.see(kids[-1])
+
     def _on_progress(self, pct: float):
         self.progress['value'] = pct
 
@@ -915,6 +942,8 @@ class App:
         순위 강조는 그 글의 행 전체를 초록으로 칠해서 나타낸다."""
         t = self.tree
         t.tag_configure('sep', background=SEP_BG, foreground=ACCENT, font=FONT_B)
+        # 성인 키워드 — 0건이 아니라 '못 쟀다'는 뜻이라 눈에 띄게 남긴다
+        t.tag_configure('adult', background=SEP_BG, foreground=SELECT_BG, font=FONT_B)
         t.tag_configure('odd',      background=BG_CARD, foreground=FG)
         t.tag_configure('even',     background=ROW_ALT, foreground=FG)
         t.tag_configure('hit_odd',  background=BG_CARD, foreground=HIT, font=FONT_B)
@@ -1179,6 +1208,8 @@ class App:
 
         self.nbr_tree.tag_configure('sep', background=SEP_BG,
                                     foreground=ACCENT, font=FONT_B)
+        self.nbr_tree.tag_configure('adult', background=SEP_BG,
+                                    foreground=SELECT_BG, font=FONT_B)
         self.nbr_tree.tag_configure('odd',  background=BG_CARD, foreground=FG)
         self.nbr_tree.tag_configure('even', background=ROW_ALT, foreground=FG)
         # 이웃 많은 블로그 — 순위 강조와 같은 초록. Tk 8.6 은 칸 단위 색을
@@ -1230,6 +1261,7 @@ class App:
         self._is_running = True
         self._stop_flag.clear()
         self._nbr_links.clear()
+        self._load_adult_cookie()
         for item in self.nbr_tree.get_children():
             self.nbr_tree.delete(item)
         self.nbr_progress['value'] = 0
@@ -1252,6 +1284,10 @@ class App:
                 posts = search_naver(
                     keyword, '신뢰도', count, stop_flag=self._stop_flag,
                 )
+            except AdultBlockedError as e:
+                self._log(f'{e}\n"{keyword}" — 순위를 알 수 없음')
+                self.root.after(0, self._mark_adult, keyword, str(e), True)
+                continue
             except Exception as e:
                 self._log(f'오류({keyword}): {e}')
                 continue

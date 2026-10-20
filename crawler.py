@@ -56,6 +56,59 @@ class NaverBlocked(Exception):
     """네이버가 검색을 차단했을 때 (403 제한 페이지)."""
 
 
+class AdultBlockedError(Exception):
+    """성인 키워드 — 성인인증 로그인 쿠키 없이는 결과가 안 나온다 (쿠키 없음/만료).
+    이 경우 '조회된 포스팅이 없습니다'로 남기면 안 된다(실제로는 노출일 수 있음)."""
+
+
+# ── 성인 키워드 (KeywordManager 와 같은 방식) ───────────────────────────────
+# 로그인 안 하면 결과 대신 이 문구만 나온다(블로그·통합검색 모두 0칸).
+_ADULT_MARK = '청소년에게 노출하기 부적합한 검색결과를 제외'
+_ADULT_SESSION = None        # 성인인증 계정 쿠키 전용 세션 — 일반 검색과 안 섞이게
+last_was_adult = False       # 방금 조회한 키워드가 성인 키워드였나 (호출한 쪽이 표시에 씀)
+
+
+def _adult_blocked(html: str, search_type: str) -> bool:
+    """'청소년 제외' 문구가 있고 결과가 0칸일 때만 막힌 것으로 본다
+    (로그인돼 결과가 나오는 화면에도 문구가 섞여 있을 수 있어 문구만으론 판정하지 않는다)."""
+    return _ADULT_MARK in html and not _parse(html, 1, search_type)
+
+
+def load_adult_cookie(base_dir) -> dict:
+    """카테고리 수집과 같은 파일(.claude_api.env)의 NAVER_NID_AUT/SES.
+    앱 폴더 → 그 위 폴더 순으로 찾는다. 서버 수집기 PC 에만 있다."""
+    import os
+    for d in (base_dir, os.path.dirname(base_dir)):
+        out = {}
+        try:
+            with open(os.path.join(d, '.claude_api.env'), encoding='utf-8') as f:
+                for line in f:
+                    k, _, v = line.strip().partition('=')
+                    if k in ('NAVER_NID_AUT', 'NAVER_NID_SES') and v.strip():
+                        out[k[6:]] = v.strip()          # NID_AUT / NID_SES
+        except Exception:
+            pass
+        if len(out) == 2:
+            return out
+    return {}
+
+
+def set_adult_cookie(cookies: dict):
+    """성인 키워드용 로그인 세션 준비 (빈 dict 면 끔)."""
+    global _ADULT_SESSION
+    if not cookies:
+        _ADULT_SESSION = None
+        return
+    sess = _mk_session()
+    for k, v in cookies.items():
+        sess.cookies.set(k, v, domain='.naver.com')
+    _ADULT_SESSION = sess
+
+
+def has_adult_cookie() -> bool:
+    return _ADULT_SESSION is not None
+
+
 def _rotate_session():
     """쿠키를 버리고 새 세션으로. 세션당 요청 한도가 여기서 리셋된다."""
     global _SESSION, _session_ready, _req_count
@@ -251,32 +304,39 @@ def _init_session():
 
 
 def _fetch(keyword: str, search_type: str, start: int) -> str:
-    if search_type == '신뢰도':
-        # page 파라미터는 효과 없음 — start만 결과를 제어
-        # start=1 → 1위~20위, start=21 → 21위~40위, ..., start=161 → 161위~180위
-        resp = _get(
-            'https://search.naver.com/search.naver',
-            params={
-                'query': keyword,
-                'ssc':   'tab.ur.all',
-                'sm':    'tab_pge',
-                'start': start,
-            },
-            timeout=15,
-        )
-    else:  # 블로그
-        resp = _get(
-            'https://search.naver.com/search.naver',
-            params={
-                'ssc':   'tab.blog.all',
-                'sm':    'tab_opt',
-                'query': keyword,
-                'start': start,
-            },
-            timeout=15,
-        )
+    """검색 한 쪽. 성인 키워드는 로그인 세션으로 다시 받아 본다
+    (KeywordManager 와 같은 방식 — 0건으로 넘기지 않고 AdultBlockedError 로 알린다)."""
+    params = (
+        {'query': keyword, 'ssc': 'tab.ur.all', 'sm': 'tab_pge', 'start': start}
+        if search_type == '신뢰도' else
+        {'ssc': 'tab.blog.all', 'sm': 'tab_opt', 'query': keyword, 'start': start}
+    )
+    url = 'https://search.naver.com/search.naver'
+
+    global last_was_adult
+    # 이미 성인으로 드러난 키워드는 처음부터 로그인 세션으로
+    use_login = last_was_adult and _ADULT_SESSION is not None
+    if use_login:
+        resp = _ADULT_SESSION.get(url, params=params, timeout=15)
+    else:
+        resp = _get(url, params=params, timeout=15)
     _check_blocked(resp)
     resp.raise_for_status()
+
+    if _adult_blocked(resp.text, search_type):
+        last_was_adult = True
+        if not use_login and _ADULT_SESSION is not None:   # 몰랐던 성인 키워드 — 로그인으로 다시
+            resp = _ADULT_SESSION.get(url, params=params, timeout=15)
+            _check_blocked(resp)
+            resp.raise_for_status()
+        if _adult_blocked(resp.text, search_type):
+            if _ADULT_SESSION is None:
+                why = '로그인 쿠키 없음'
+            elif 'nidlogin.logout' in resp.text or '로그아웃' in resp.text:
+                why = '로그인은 됐지만 성인인증이 안 된 계정'
+            else:
+                why = '로그인 쿠키 만료 — 새 NID_AUT/NID_SES 를 넣어 주세요'
+            raise AdultBlockedError(f'성인 키워드 — {why}')
     return resp.text
 
 
@@ -391,6 +451,9 @@ def search_naver(
 ) -> list:
     _init_session()
 
+    global last_was_adult
+    last_was_adult = False       # 키워드마다 새로 판정한다
+
     all_posts: list = []
     seen_keys: set  = set()
     start = 1
@@ -412,6 +475,8 @@ def search_naver(
 
         try:
             html = _fetch(keyword, search_type, start)
+        except AdultBlockedError:
+            raise          # 성인 키워드는 0건이 아니라 '성인'으로 알린다
         except NaverBlocked:
             raise          # 차단은 조용히 0건으로 넘기지 말고 화면에 알린다
         except Exception:
