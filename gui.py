@@ -22,7 +22,7 @@ from crawler import (
     set_adult_servers,
 )
 
-VERSION = 'v1.1.15'
+VERSION = 'v1.1.16'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -1078,11 +1078,17 @@ class App:
                 break
             self._log(f'조회 중... ({ki+1}/{n}) "{kw}"')
             counts = {}
+            adult_why = ''
             for tab in ('블로그', '카페'):
                 if self._stop_flag.is_set():
                     break
                 try:
                     posts = fetch_first_page_titles(kw, tab)
+                except AdultBlockedError as e:
+                    # 0 / 0 으로 남기면 '글이 없다'로 오해한다 — 성인이라고 밝힌다
+                    self._log(f'{e}\n"{kw}" — 글 수를 셀 수 없음')
+                    adult_why = str(e)
+                    break
                 except Exception as e:
                     self._log(f'오류({kw}/{tab}탭): {e}')
                     posts = []
@@ -1097,7 +1103,10 @@ class App:
                 step += 1
                 self.root.after(0, self._kwchk_progress_set, step * 100 / (n * 2))
                 time.sleep(random.uniform(0.6, 1.4))
-            if counts:
+            if adult_why:
+                self.root.after(0, self._kwchk_add_summary,
+                                kw, {}, volumes.get(kw), adult_why)
+            elif counts:
                 self.root.after(0, self._kwchk_add_summary,
                                 kw, counts, volumes.get(kw))
         self.root.after(0, self._kwchk_done)
@@ -1114,15 +1123,17 @@ class App:
             )
             self._kwchk_links[iid] = link
 
-    def _kwchk_add_summary(self, kw, counts, volume=None):
+    def _kwchk_add_summary(self, kw, counts, volume=None, adult_why=''):
         fmt = lambda v: f'{v[0]} / {v[1]}' if v else '-'
         row = tk.Frame(self.kwchk_sum_rows, bg=BG_CARD)
         row.pack(fill=tk.X)
         tk.Label(row, text=kw, width=self.SUM_COL_KW,
                  font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
         for tab in ('블로그', '카페'):
-            tk.Label(row, text=fmt(counts.get(tab)), width=self.SUM_COL_CNT,
-                     font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)
+            tk.Label(row, text='성인' if adult_why else fmt(counts.get(tab)),
+                     width=self.SUM_COL_CNT, font=FONT_B if adult_why else FONT,
+                     bg=BG_CARD, fg=SELECT_BG if adult_why else FG,
+                     pady=4).pack(side=tk.LEFT)
         vol_txt = f'{volume:,}' if isinstance(volume, int) else '-'
         tk.Label(row, text=vol_txt, width=self.SUM_COL_VOL,
                  font=FONT, bg=BG_CARD, fg=FG, pady=4).pack(side=tk.LEFT)

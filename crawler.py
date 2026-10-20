@@ -88,26 +88,37 @@ def set_adult_servers(addrs):
         _adult_server_ok = None
 
 
+last_server_why = ''        # 서버가 알려 준 실패 이유 (화면에 그대로 보여 준다)
+
+
 def _fetch_via_server(url: str) -> str:
     """성인 쿠키를 가진 수집기 서버가 대신 받아 준 화면을 가져온다.
     순위를 세는 일은 여기(부탁한 쪽)서 그대로 한다 — 규칙이 두 군데로 갈라지지 않게.
     못 닿으면 '' 를 돌려준다(그러면 호출부가 '성인 키워드'로 알린다)."""
-    global _adult_server_ok
+    global _adult_server_ok, last_server_why
     import json as _j
     import urllib.parse as _up
+    last_server_why = ''
     order = ([_adult_server_ok] if _adult_server_ok else []) +             [a for a in ADULT_SERVERS if a != _adult_server_ok]
     for addr in order:
         try:
             ask = f'http://{addr}/get?url=' + _up.quote(url, safe='')
             r = requests.get(ask, timeout=60)
-            if r.status_code != 200:
-                continue
-            d = _j.loads(r.text)
-            if d.get('ok') and d.get('html'):
+            try:
+                d = _j.loads(r.text)
+            except Exception:
+                d = {}
+            if r.status_code == 200 and d.get('ok') and d.get('html'):
                 _adult_server_ok = addr
                 return d['html']
+            # 서버에는 닿았는데 거절당했다 — 이유를 그대로 전한다(어디를 봐야 하는지 알게)
+            if d.get('why'):
+                _adult_server_ok = addr
+                last_server_why = f'수집기 서버: {d["why"]}'
         except Exception:
             continue
+    if not last_server_why:
+        last_server_why = '수집기 서버에 닿지 않음'
     return ''
 
 
@@ -376,9 +387,9 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
                     'nidlogin.logout' in resp.text or '로그아웃' in resp.text):
                 why = '로그인은 됐지만 성인인증이 안 된 계정'
             elif html:
-                why = '수집기 서버도 못 받음(서버 쪽 로그인 확인 필요)'
+                why = '수집기 서버도 성인 화면을 못 받음'
             else:
-                why = '수집기 서버에 닿지 않음'
+                why = last_server_why or '수집기 서버에 닿지 않음'
             raise AdultBlockedError(f'성인 키워드 — {why}')
     return resp.text
 
@@ -677,11 +688,37 @@ def fetch_first_page_titles(keyword: str, tab: str) -> list:
     추가 로드(스크롤) 없이 첫 응답에 실린 글만 반환: [{'title', 'link'}]
     """
     _init_session()
-    resp = _get('https://search.naver.com/search.naver',
-                params=_first_page_params(keyword, tab), timeout=15)
+    params = _first_page_params(keyword, tab)
+    url = 'https://search.naver.com/search.naver'
+    resp = _get(url, params=params, timeout=15)
     _check_blocked(resp)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, 'lxml')
+    html = resp.text
+
+    # 성인 키워드는 여기서도 0건으로 넘기면 안 된다 (순위 체크와 같은 처리)
+    if _ADULT_MARK in html and not _first_page_rows(html, tab):
+        global last_was_adult
+        last_was_adult = True
+        got = ''
+        if _ADULT_SESSION is not None:
+            r2 = _ADULT_SESSION.get(url, params=params, timeout=15)
+            if _ADULT_MARK not in r2.text or _first_page_rows(r2.text, tab):
+                got = r2.text
+        if not got:        # 쿠키를 가진 수집기 서버에 대신 부탁
+            full = url + '?' + urllib.parse.urlencode(params)
+            h = _fetch_via_server(full)
+            if h and (_ADULT_MARK not in h or _first_page_rows(h, tab)):
+                got = h
+        if not got:
+            raise AdultBlockedError('성인 키워드 — '
+                                    + (last_server_why or '수집기 서버에 닿지 않음'))
+        html = got
+
+    return _first_page_rows(html, tab)
+
+
+def _first_page_rows(html: str, tab: str) -> list:
+    soup = BeautifulSoup(html, 'lxml')
 
     results, seen = [], set()
     if tab == '블로그':
