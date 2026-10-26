@@ -76,7 +76,7 @@ def _adult_blocked(html: str, search_type: str) -> bool:
 
 # 수집기 서버(성인 쿠키가 있는 PC)에 '이 주소 좀 대신 받아 줘' 하고 부탁하는 길.
 # 밖에서는 이미 열린 클로드 서버(8787)의 /ad/ 전달 길로만 닿는다.
-ADULT_SERVERS = ['121.179.0.1:8787/ad', '127.0.0.1:8792']
+ADULT_SERVERS = ['bamhobak.iptime.org:8787/ad', '127.0.0.1:8792']
 _adult_server_ok = None      # 한 번 통한 주소를 기억 (매번 다 두드리지 않게)
 
 

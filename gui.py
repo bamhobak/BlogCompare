@@ -22,7 +22,7 @@ from crawler import (
     set_adult_servers,
 )
 
-VERSION = 'v1.1.16'
+VERSION = 'v1.1.17'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
