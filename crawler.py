@@ -394,6 +394,34 @@ def _fetch(keyword: str, search_type: str, start: int) -> str:
     return resp.text
 
 
+# 블로그탭 31위부터 — 2026-10-29 실측: search.naver.com 은 start 를 무시하고 늘 1~30위를 준다.
+# 화면이 스크롤할 때 부르는 API 주소와 X-Prs-Query-Info 값이 1쪽 HTML 에 함께 박혀 있다.
+# 이 머리글을 빼면 앞쪽 글이 섞여 나온다(31~60위 중 10개가 1쪽 글).
+_BLOG_MORE_PAT = re.compile(
+    r'url:"(https?://s\.search\.naver\.com/p/review/[^"]+)",'
+    r'headers:\{"X-Prs-Query-Info":"([^"]*)"'
+)
+
+
+def _blog_more_start(html: str):
+    """1쪽 HTML → (다음 쪽 주소, X-Prs-Query-Info). 없으면 (None, '')."""
+    m = _BLOG_MORE_PAT.search(html)
+    return (_unescape(m.group(1)), m.group(2)) if m else (None, '')
+
+
+def _fetch_blog_more(url: str, prs: str):
+    """블로그탭 다음 30개. (html, 그다음 주소) — 같은 X-Prs-Query-Info 를 끝까지 쓴다."""
+    resp = _get(url, timeout=15, headers={
+        'Referer': 'https://search.naver.com/',
+        'X-Prs-Query-Info': prs,
+    })
+    _check_blocked(resp)
+    resp.raise_for_status()
+    d = resp.json()
+    html = ''.join(c.get('html', '') for c in d.get('collection') or [])
+    return html, d.get('url')
+
+
 def _parse(html: str, start_rank: int, search_type: str = '') -> list:
     """
     Extract blog post results from Naver search HTML.
@@ -516,6 +544,7 @@ def search_naver(
     seen_keys: set  = set()
     start = 1
     per_page = PER_PAGE_UR if search_type == '신뢰도' else PER_PAGE
+    more = (None, '')    # 블로그탭 다음 쪽 (주소, X-Prs-Query-Info)
 
     # 신뢰도: page=2~10, 20개씩 (최대 180위)
     if search_type == '신뢰도':
@@ -532,7 +561,15 @@ def search_naver(
             break
 
         try:
-            html = _fetch(keyword, search_type, start)
+            if search_type == '블로그' and start > 1:
+                if not more[0]:
+                    break
+                html, nxt = _fetch_blog_more(*more)
+                more = (nxt, more[1])
+            else:
+                html = _fetch(keyword, search_type, start)
+                if search_type == '블로그':
+                    more = _blog_more_start(html)
         except AdultBlockedError:
             raise          # 성인 키워드는 0건이 아니라 '성인'으로 알린다
         except NaverBlocked:
