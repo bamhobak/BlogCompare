@@ -428,6 +428,10 @@ def _parse(html: str, start_rank: int, search_type: str = '') -> list:
                 m = BLOG_PAT.search(a['href'])
                 if not m:
                     continue
+                # 2026-10-29 — 상자 위 프로필 줄(블로그명·날짜)의 날짜 링크도 같은
+                # ellipsis-1 class 를 달고 제목보다 먼저 나온다 → 제목에 '1일 전'이 들어갔다.
+                if a.find_parent(class_='sds-comps-profile'):
+                    continue
                 title_span = a.find(
                     'span',
                     class_=lambda c: c and 'sds-comps-text-ellipsis-1' in c,
