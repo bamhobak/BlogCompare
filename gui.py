@@ -24,7 +24,7 @@ from crawler import (
     set_adult_servers,
 )
 
-VERSION = 'v1.1.40'
+VERSION = 'v1.1.43'
 BASE_DIR = (
     os.path.dirname(sys.executable)
     if getattr(sys, 'frozen', False)
@@ -218,6 +218,10 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f'Blog Compare {VERSION}')
+        try:     # 창 왼쪽 위 — 업데이트 창 같은 다른 창에도 함께 쓰인다
+            self.root.iconbitmap(default=os.path.join(_BUNDLED_DIR, 'icon.ico'))
+        except tk.TclError:
+            pass
         # 배율이 큰 화면(150% 등)에서 창이 화면 밖으로 넘치지 않게 맞춘다
         win_w = min(px(1430), self.root.winfo_screenwidth()  - px(40))
         win_h = min(px(890),  self.root.winfo_screenheight() - px(80))
