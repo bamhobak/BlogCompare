@@ -612,7 +612,7 @@ def search_naver(
     return all_posts
 
 
-# ── 키워드 체크 (블로그탭/카페탭 최근 1주일 첫 페이지) ─────────────────────
+# ── 제목·키워드 비교, 월간 조회수 ─────────────────────
 
 def _norm_match_text(s: str) -> str:
     """매칭용 정규화: 소문자화 후 한글/영문/숫자만 남김."""
@@ -648,20 +648,6 @@ def title_matches_keyword(keyword: str, title: str) -> bool:
         if t and not _covers(t, text):
             return False
     return True
-
-
-def _first_page_params(keyword: str, tab: str) -> dict:
-    if tab == '블로그':
-        return {'ssc': 'tab.blog.all', 'sm': 'tab_opt',
-                'query': keyword, 'nso': 'so:r,p:1w', 'qdt': '0'}
-    return {'ssc': 'tab.cafe.all', 'sm': 'tab_jum',
-            'query': keyword, 'nso': 'so:r,p:1w'}
-
-
-def first_page_search_url(keyword: str, tab: str) -> str:
-    """키워드 체크가 조회하는 것과 동일한 네이버 검색 페이지 URL."""
-    return ('https://search.naver.com/search.naver?'
-            + urllib.parse.urlencode(_first_page_params(keyword, tab)))
 
 
 def fetch_monthly_volumes(keywords: list, api_key: str, secret_key: str,
@@ -712,79 +698,3 @@ def fetch_monthly_volumes(keywords: list, api_key: str, secret_key: str,
                 out[norm[rel]] = (_num(item.get('monthlyPcQcCnt', 0))
                                   + _num(item.get('monthlyMobileQcCnt', 0)))
     return out
-
-
-def main_search_url(keyword: str) -> str:
-    """네이버 메인 통합검색 페이지 URL."""
-    return ('https://search.naver.com/search.naver?'
-            + urllib.parse.urlencode({
-                'where': 'nexearch', 'sm': 'top_hty',
-                'fbm': '0', 'ie': 'utf8', 'query': keyword,
-            }))
-
-
-def fetch_first_page_titles(keyword: str, tab: str) -> list:
-    """
-    tab: '블로그' | '카페' — 최근 1주일 검색 첫 페이지 글 목록.
-    추가 로드(스크롤) 없이 첫 응답에 실린 글만 반환: [{'title', 'link'}]
-    """
-    _init_session()
-    params = _first_page_params(keyword, tab)
-    url = 'https://search.naver.com/search.naver'
-    resp = _get(url, params=params, timeout=15)
-    _check_blocked(resp)
-    resp.raise_for_status()
-    html = resp.text
-
-    # 성인 키워드는 여기서도 0건으로 넘기면 안 된다 (순위 체크와 같은 처리)
-    if _ADULT_MARK in html and not _first_page_rows(html, tab):
-        global last_was_adult
-        last_was_adult = True
-        got = ''
-        if _ADULT_SESSION is not None:
-            r2 = _ADULT_SESSION.get(url, params=params, timeout=15)
-            if _ADULT_MARK not in r2.text or _first_page_rows(r2.text, tab):
-                got = r2.text
-        if not got:        # 쿠키를 가진 수집기 서버에 대신 부탁
-            full = url + '?' + urllib.parse.urlencode(params)
-            h = _fetch_via_server(full)
-            if h and (_ADULT_MARK not in h or _first_page_rows(h, tab)):
-                got = h
-        if not got:
-            raise AdultBlockedError('성인 키워드 — '
-                                    + (last_server_why or '수집기 서버에 닿지 않음'))
-        html = got
-
-    return _first_page_rows(html, tab)
-
-
-def _first_page_rows(html: str, tab: str) -> list:
-    soup = BeautifulSoup(html, 'lxml')
-
-    results, seen = [], set()
-    if tab == '블로그':
-        # 블로그탭: headline1 span 기반 (순위 체크와 동일 마크업)
-        for span in soup.find_all(
-            'span', class_=lambda c: c and 'sds-comps-text-type-headline1' in c,
-        ):
-            a = span.find_parent('a')
-            href = a.get('href', '') if a else ''
-            key = href.split('?')[0]
-            if not href or key in seen:
-                continue
-            seen.add(key)
-            title = re.sub(r'\s+', ' ', span.get_text(' ')).strip()
-            if title:
-                results.append({'title': title, 'link': href})
-    else:
-        # 카페탭: 구형 마크업 — title_link 앵커가 글 제목
-        for a in soup.find_all('a', class_='title_link'):
-            href = a.get('href', '')
-            key = href.split('?')[0]
-            if not href or key in seen:
-                continue
-            seen.add(key)
-            title = re.sub(r'\s+', ' ', a.get_text(' ')).strip()
-            if title:
-                results.append({'title': title, 'link': href})
-    return results
